@@ -1,0 +1,104 @@
+<Window x:Class="Vitrines.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Витрины — панель управления" Width="860" Height="560"
+        WindowStartupLocation="CenterScreen" Loaded="Window_Loaded" Closed="Window_Closed">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="Витрины — безопасный режим" FontSize="20" FontWeight="SemiBold"/>
+
+        <Border Grid.Row="1" Margin="0,10,0,10" Padding="10" Background="#F6F7F8" CornerRadius="6">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <CheckBox x:Name="AutoToggle" Content="Автоматическая сортировка включена"
+                              VerticalAlignment="Center" Checked="AutoToggle_Changed" Unchecked="AutoToggle_Changed"/>
+                    <TextBlock x:Name="StatusText" Margin="16,0,0,0" VerticalAlignment="Center" Foreground="#444"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                    <Button Content="Новая витрина" Margin="0,0,8,0" Padding="10,4" Click="NewVitrine_Click"/>
+                    <Button Content="Новый портал…" Margin="0,0,8,0" Padding="10,4" Click="NewPortal_Click"/>
+                    <Button Content="Показать витрины" Margin="0,0,8,0" Padding="10,4" Click="ShowVitrines_Click"/>
+                    <Button Content="Скрыть витрины" Margin="0,0,8,0" Padding="10,4" Click="HideVitrines_Click"/>
+                    <Button Content="Разобрать сейчас" Margin="0,0,8,0" Padding="10,4" Click="Scan_Click"/>
+                    <Button Content="Обновить" Margin="0,0,8,0" Padding="10,4" Click="Refresh_Click"/>
+                    <Button Content="Откатить последнее" Padding="10,4" Click="Undo_Click"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <TabControl Grid.Row="2">
+            <TabItem Header="Сводка">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock Text="Источники наблюдения (наблюдение активно, действия — только при включённой автоматике):" FontWeight="SemiBold" DockPanel.Dock="Left"/>
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                                <Button Content="Добавить источник" Padding="8,3" Margin="8,0,0,0" Click="AddSource_Click"/>
+                                <Button Content="Удалить выбранный" Padding="8,3" Margin="6,0,0,0" Click="RemoveSource_Click"/>
+                            </StackPanel>
+                        </DockPanel>
+                        <ListBox x:Name="SourcesList" Margin="0,6,0,10" Height="90"/>
+                        <TextBlock x:Name="SummaryText" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <GroupBox Grid.Row="1" Header="Витрины" Margin="0,10,0,0">
+                        <ListBox x:Name="VitrinesList"/>
+                    </GroupBox>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Dry-run (без изменений)">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal">
+                        <Button Content="Выбрать папку и проверить…" Padding="10,4" Click="DryRun_Click"/>
+                        <TextBlock x:Name="DryRunInfo" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="#555"/>
+                    </StackPanel>
+                    <ListBox x:Name="DryRunList" Grid.Row="1" Margin="0,8,0,0" FontFamily="Consolas" FontSize="12"/>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Журнал">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="Последние события (история хранится в %LOCALAPPDATA%\Vitrines\history.jsonl):" Foreground="#555"/>
+                    <ListBox x:Name="HistoryList" Grid.Row="1" Margin="0,8,0,0" FontFamily="Consolas" FontSize="12"/>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Правила">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Добавить правило (по расширениям)" Padding="8,4" Click="AddRule_Click"/>
+                        <Button Content="Вкл/выкл выбранное" Padding="8,4" Margin="8,0,0,0" Click="ToggleRule_Click"/>
+                        <Button Content="Удалить выбранное" Padding="8,4" Margin="8,0,0,0" Click="DeleteRule_Click"/>
+                        <Button Content="Сохранить правила" Padding="8,4" Margin="8,0,0,0" Click="SaveRules_Click"/>
+                    </StackPanel>
+                    <ListBox x:Name="RulesList" Grid.Row="1" FontFamily="Consolas" FontSize="12"/>
+                    <TextBlock Grid.Row="2" Margin="0,6,0,0" Foreground="#666" TextWrapping="Wrap"
+                               Text="Правила применяются по порядку (сверху — приоритетнее). Действие «Создать витрину» создаст/использует витрину с указанным именем и физически отсортирует файлы в её папку."/>
+                </Grid>
+            </TabItem>
+        </TabControl>
+
+        <TextBlock Grid.Row="3" Margin="0,8,0,0" Foreground="#888" FontSize="12" TextWrapping="Wrap"
+                   Text="По умолчанию автоматика выключена: наблюдение и ядро готовы, но файлы не перемещаются, пока вы не включите сортировку. Проверяйте влияние через Dry-run."/>
+    </Grid>
+</Window>
