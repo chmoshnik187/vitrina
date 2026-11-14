@@ -62,7 +62,8 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
     public async Task AppendHistoryAsync(HistoryEntry entry, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_root);
-        var line = JsonSerializer.Serialize(entry, JsonOpts);
+        // JSONL: одна запись = одна строка, без форматирования
+        var line = JsonSerializer.Serialize(entry);
         await File.AppendAllTextAsync(_historyPath, line + Environment.NewLine, Encoding.UTF8, ct);
     }
 

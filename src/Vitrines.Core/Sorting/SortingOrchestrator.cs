@@ -118,9 +118,14 @@ public sealed class SortingOrchestrator : IDisposable
 
     private bool IsAlreadyPlaced(string path)
     {
-        var full = Path.GetFullPath(path);
+        string full;
+        try { full = Path.GetFullPath(path); } catch { return false; }
         return _data.Vitrines.SelectMany(v => v.Items).Any(i =>
-            string.Equals(Path.GetFullPath(i.Path), full, StringComparison.OrdinalIgnoreCase));
+        {
+            if (string.IsNullOrWhiteSpace(i.Path)) return false;
+            try { return string.Equals(Path.GetFullPath(i.Path), full, StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        });
     }
 
     private bool ShouldSkipScanPath(string path)
@@ -261,8 +266,17 @@ public sealed class SortingOrchestrator : IDisposable
         return final;
     }
 
-    private bool IsPinned(string path) =>
-        _data.Vitrines.SelectMany(v => v.Items).Any(i => i.IsPinned && string.Equals(i.Path, path, StringComparison.OrdinalIgnoreCase));
+    private bool IsPinned(string path)
+    {
+        string full;
+        try { full = Path.GetFullPath(path); } catch { full = path; }
+        return _data.Vitrines.SelectMany(v => v.Items).Any(i =>
+        {
+            if (!i.IsPinned || string.IsNullOrWhiteSpace(i.Path)) return false;
+            try { return string.Equals(Path.GetFullPath(i.Path), full, StringComparison.OrdinalIgnoreCase); }
+            catch { return string.Equals(i.Path, path, StringComparison.OrdinalIgnoreCase); }
+        });
+    }
 
     private static ItemKind DetectKind(string path)
     {
@@ -363,3 +377,4 @@ public sealed class SortingOrchestrator : IDisposable
         _gate.Dispose();
     }
 }
+

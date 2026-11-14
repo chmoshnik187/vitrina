@@ -80,6 +80,19 @@ public partial class MainWindow : Window, IDesktopActions
                 _desktop?.ShowAll();
                 SetStatus("Витрины показаны на рабочем столе.");
             }
+            if (args.Any(a => string.Equals(a, "--scan", StringComparison.OrdinalIgnoreCase)))
+            {
+                SetStatus("Разбор существующих файлов…");
+                var n = await _orchestrator.ScanExistingAsync();
+                _desktop?.RefreshOpen();
+                await RefreshAllAsync();
+                SetStatus($"Разбор завершён: обработано {n} элементов.");
+                if (args.Any(a => string.Equals(a, "--exit", StringComparison.OrdinalIgnoreCase)))
+                {
+                    await Task.Delay(300);
+                    Close();
+                }
+            }
         }
         catch (Exception ex)
         {
