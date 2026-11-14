@@ -102,6 +102,10 @@ public partial class VitrineWindow : Window
         _suppressSave = true;
         TitleText.Text = _model.Name;
         Left = _model.X; Top = _model.Y; Width = _model.Width; Height = _model.Height;
+        // Прозрачность витрины (настраиваемая): применяем к контейнеру, с разумными границами.
+        var op = _model.Style?.Opacity ?? 0.9;
+        if (op < 0.35) op = 0.35; if (op > 1.0) op = 1.0;
+        RootBorder.Opacity = op;
         RefreshItems();
         _suppressSave = false;
     }
@@ -351,6 +355,22 @@ public partial class VitrineWindow : Window
             var storage = Vitrines.Core.Storage.VitrineStorage.GetManagedFolder(_model);
             TryOpen(storage);
         }
+    }
+
+    private async void OpacityUp_Click(object sender, RoutedEventArgs e)
+    {
+        _model.Style ??= new VitrineStyle();
+        _model.Style.Opacity = Math.Min(1.0, (_model.Style.Opacity <= 0 ? 0.9 : _model.Style.Opacity) + 0.08);
+        ApplyModel();
+        await _actions.SaveLayoutAsync();
+    }
+
+    private async void OpacityDown_Click(object sender, RoutedEventArgs e)
+    {
+        _model.Style ??= new VitrineStyle();
+        _model.Style.Opacity = Math.Max(0.35, (_model.Style.Opacity <= 0 ? 0.9 : _model.Style.Opacity) - 0.08);
+        ApplyModel();
+        await _actions.SaveLayoutAsync();
     }
 
     private async void DeleteVitrine_Click(object sender, RoutedEventArgs e)
