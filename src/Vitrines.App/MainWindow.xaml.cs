@@ -73,6 +73,13 @@ public partial class MainWindow : Window, IDesktopActions
 
             await RefreshAllAsync();
             SetStatus("Готово. Наблюдение активно, автоматика " + (_orchestrator.Data.Watch.AutomationEnabled ? "включена." : "выключена (безопасно)."));
+
+            var args = Environment.GetCommandLineArgs();
+            if (args.Any(a => string.Equals(a, "--show-vitrines", StringComparison.OrdinalIgnoreCase)))
+            {
+                _desktop?.ShowAll();
+                SetStatus("Витрины показаны на рабочем столе.");
+            }
         }
         catch (Exception ex)
         {
