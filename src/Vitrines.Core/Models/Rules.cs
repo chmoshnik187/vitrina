@@ -1,45 +1,52 @@
 namespace Vitrines.Core.Models;
 
-/// <summary>Правило авто-сортировки: условия → действие.</summary>
+/// <summary>Правило авто-сортировки: условия → действие. Применяются по Order (меньше = раньше).</summary>
 public sealed class SortingRule
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "Правило";
     public bool Enabled { get; set; } = true;
-
-    /// <summary>Меньше — выше приоритет (специфичные правила раньше общих).</summary>
     public int Order { get; set; }
-
+    /// <summary>Если true — правило трактуется как исключение/«не трогать» при совпадении (останавливает дальнейший разбор).</summary>
+    public bool IsExclusion { get; set; }
     public RuleCondition Condition { get; set; } = new();
     public RuleAction Action { get; set; } = new();
 }
 
-/// <summary>Условия совпадения. Пустые/NULL поля не ограничивают.</summary>
+/// <summary>Условия совпадения. Пустые/NULL поля не ограничивают. Все заданные группы должны совпасть (И), значения внутри списков — ИЛИ.</summary>
 public sealed class RuleCondition
 {
-    /// <summary>Расширения без точки, напр. ["jpg","png"].</summary>
     public List<string>? Extensions { get; set; }
-
-    /// <summary>Подстроки/шаблоны в имени (простое contains на MVP).</summary>
     public List<string>? NameContains { get; set; }
-
+    /// <summary>Маски/шаблоны имени (wildcard * ?), напр. "отчёт*", "*.jpg".</summary>
+    public List<string>? NamePatterns { get; set; }
+    /// <summary>Регулярное выражение (IgnoreCase) для имени файла.</summary>
+    public string? NameRegex { get; set; }
     public List<ItemKind>? Kinds { get; set; }
-
-    /// <summary>Источники-наблюдатели, к которым применимо правило; null = любые.</summary>
+    /// <summary>Ограничение по источникам-наблюдателям; null = любые.</summary>
     public List<string>? SourcePaths { get; set; }
+
+    // Размер (байты). Для папок размер может быть неизвестен/0.
+    public long? MinSizeBytes { get; set; }
+    public long? MaxSizeBytes { get; set; }
+    // Даты (UTC, сравниваются с LastWriteTimeUtc/CreationTimeUtc)
+    public DateTimeOffset? ModifiedAfter { get; set; }
+    public DateTimeOffset? ModifiedBefore { get; set; }
+    public DateTimeOffset? CreatedAfter { get; set; }
+    public DateTimeOffset? CreatedBefore { get; set; }
+
+    // Исключения внутри условия (если совпало исключение — условие НЕ выполняется)
+    public List<string>? ExcludeExtensions { get; set; }
+    public List<string>? ExcludeNameContains { get; set; }
+    public List<string>? ExcludeNamePatterns { get; set; }
+    public List<string>? ExcludeFolders { get; set; } // пути/префиксы, которые не трогать
 }
 
 public sealed class RuleAction
 {
     public RuleActionType Type { get; set; } = RuleActionType.PlaceInVitrine;
-
-    /// <summary>Целевая витрина (для PlaceInVitrine).</summary>
     public Guid? TargetVitrineId { get; set; }
-
-    /// <summary>Имя/категория для создания новой витрины, если нет подходящей.</summary>
     public string? CreateVitrineName { get; set; }
-
-    /// <summary>Целевая реальная папка (для MoveToFolder/порталов).</summary>
     public string? TargetFolderPath { get; set; }
 }
 
@@ -48,7 +55,9 @@ public enum RuleActionType
     PlaceInVitrine,
     CreateVitrineAndPlace,
     MoveToFolder,
-    Ignore
+    Ignore,
+    /// <summary>Отправить в «Неразобранное»/инбокс (не терять, показать причину).</summary>
+    SendToInbox
 }
 
 /// <summary>Результат оценки правил — для объяснения и dry-run.</summary>
@@ -59,4 +68,5 @@ public sealed class RuleDecision
     public string Reason { get; set; } = string.Empty;
     public Guid? TargetVitrineId { get; set; }
     public string? TargetVitrineName { get; set; }
+    public bool IsExclusion { get; set; }
 }

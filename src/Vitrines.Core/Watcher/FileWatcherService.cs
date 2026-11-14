@@ -27,17 +27,21 @@ public sealed class FileWatcherService : IFileWatcherService
         StopWatchers();
         foreach (var path in sourcePaths.Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var w = new FileSystemWatcher(path)
+            try
             {
-                IncludeSubdirectories = false,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.Size | NotifyFilters.LastWrite | NotifyFilters.CreationTime,
-                InternalBufferSize = 64 * 1024,
-                EnableRaisingEvents = true
-            };
-            w.Created += OnFsEvent;
-            w.Changed += OnFsEvent;
-            w.Renamed += OnRenamed;
-            _watchers.Add(w);
+                var w = new FileSystemWatcher(path)
+                {
+                    IncludeSubdirectories = _settings.Recursive,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.Size | NotifyFilters.LastWrite | NotifyFilters.CreationTime,
+                    InternalBufferSize = 64 * 1024,
+                    EnableRaisingEvents = true
+                };
+                w.Created += OnFsEvent;
+                w.Changed += OnFsEvent;
+                w.Renamed += OnRenamed;
+                _watchers.Add(w);
+            }
+            catch { /* источник недоступен — пропускаем */ }
         }
         _ = Task.Run(LoopAsync);
     }
@@ -69,14 +73,38 @@ public sealed class FileWatcherService : IFileWatcherService
     private void Touch(string path, WatcherChangeTypes changeType)
     {
         if (string.IsNullOrWhiteSpace(path)) return;
-        var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        string full;
+        try { full = Path.GetFullPath(path); } catch { return; }
+        var ext = Path.GetExtension(full).TrimStart('.').ToLowerInvariant();
         if (_settings.TempExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)) return;
-        if (IsSelfProduced(path)) return;
+        if (_settings.ExcludeExtensions.Any(e => string.Equals(e.TrimStart('.'), ext, StringComparison.OrdinalIgnoreCase))) return;
+        var name = Path.GetFileName(full);
+        if (_settings.ExcludeNameContains.Any(s => name.Contains(s, StringComparison.OrdinalIgnoreCase))) return;
+        if (_settings.ExcludeFolders.Any(f => IsUnder(full, f))) return;
+        // не реагируем на изменения внутри управляемого хранилища витрин
+        try
+        {
+            var storageRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vitrines", "storage");
+            if (IsUnder(full, storageRoot)) return;
+        }
+        catch { }
+        if (IsSelfProduced(full)) return;
 
-        var full = Path.GetFullPath(path);
         _pending.AddOrUpdate(full,
             _ => Pending.New(changeType),
             (_, p) => { p.Touch(changeType); return p; });
+    }
+
+    private static bool IsUnder(string path, string root)
+    {
+        if (string.IsNullOrWhiteSpace(root)) return false;
+        try
+        {
+            var fp = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var fr = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return fp.StartsWith(fr, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return path.StartsWith(root, StringComparison.OrdinalIgnoreCase); }
     }
 
     private bool IsSelfProduced(string path)

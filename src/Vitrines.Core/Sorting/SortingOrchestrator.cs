@@ -6,10 +6,6 @@ using Vitrines.Core.Watcher;
 
 namespace Vitrines.Core.Sorting;
 
-/// <summary>
-/// Связывает наблюдатель → движок правил → действие (размещение/создание витрины/перемещение)
-/// → журнал. Автоматика объяснима: решение и причина пишутся в историю.
-/// </summary>
 public sealed class SortingOrchestrator : IDisposable
 {
     private readonly IWorkspaceStore _store;
@@ -23,6 +19,7 @@ public sealed class SortingOrchestrator : IDisposable
     private bool _started;
 
     public event EventHandler<HistoryEntry>? OnHistory;
+    public event EventHandler? OnStateChanged;
 
     public SortingOrchestrator(IWorkspaceStore store, IRuleEngine rules, IFileOperator fileOps, IFileWatcherService watcher)
     {
@@ -35,60 +32,77 @@ public sealed class SortingOrchestrator : IDisposable
     }
 
     public WorkspaceData Data => _data;
+    public IWorkspaceStore Store => _store;
 
     public async Task StartAsync(CancellationToken ct = default)
     {
         _data = await _store.LoadAsync(ct);
         var changed = false;
-        if (_data.Watch.Sources.Count == 0)
-        {
-            // разумные дефолты-источники для первого запуска
-            _data.Watch.Sources = DefaultSources();
-            changed = true;
-        }
-        if (_data.Rules.Count == 0)
-        {
-            _data.Rules = Rules.DefaultRules.Create();
-            await _store.SaveRulesAsync(_data, ct);
-            changed = true;
-        }
-        if (_data.Vitrines.Count == 0)
-        {
-            // Создаём витрины-категории заранее, чтобы рабочий стол сразу выглядел как набор «витрин».
-            _data.Vitrines = CreateDefaultVitrines();
-            changed = true;
-        }
-        if (changed)
-        {
-            await _store.SaveLayoutAsync(_data, ct);
-            await _store.SaveSettingsAsync(_data, ct);
-        }
+        if (_data.Watch.Sources.Count == 0) { _data.Watch.Sources = DefaultSources(); changed = true; }
+        if (_data.Rules.Count == 0) { _data.Rules = DefaultRules.Create(); await _store.SaveRulesAsync(_data, ct); changed = true; }
+        if (_data.Vitrines.Count == 0) { _data.Vitrines = CreateDefaultVitrines(); changed = true; }
+        _data.Watch.Appearance ??= new AppearanceSettings();
+        _data.Inbox ??= new();
+        Normalize();
+        if (changed) { await _store.SaveLayoutAsync(_data, ct); await _store.SaveSettingsAsync(_data, ct); }
         _watcher.Configure(_data.Watch);
         _watcher.Start(_data.Watch.Sources);
         _started = true;
     }
 
+    private void Normalize()
+    {
+        _data.Watch.Sources ??= new();
+        _data.Watch.TempExtensions ??= new() { "crdownload", "part", "tmp", "download" };
+        _data.Watch.ExcludeFolders ??= new();
+        _data.Watch.ExcludeExtensions ??= new();
+        _data.Watch.ExcludeNameContains ??= new();
+        _data.Watch.Appearance ??= new AppearanceSettings();
+        foreach (var r in _data.Rules) r.Condition ??= new RuleCondition();
+        // обеспечить наличие витрины "Неразобранное" при политике inbox/placement
+        if (_data.Watch.Unmatched != UnmatchedPolicy.Ignore && !_data.Vitrines.Any(v => string.Equals(v.Name, _data.Watch.UnmatchedVitrineName, StringComparison.OrdinalIgnoreCase)))
+        {
+            _data.Vitrines.Add(new Vitrine { Name = _data.Watch.UnmatchedVitrineName, Kind = VitrineKind.Collection, X = 80, Y = 80, Width = 320, Height = 240 });
+        }
+    }
+
     public void Stop() { _watcher.Stop(); _started = false; }
 
-    /// <summary>Dry-run: оценить файлы в папке без применения действий.</summary>
+    public void ReconfigureWatcher()
+    {
+        _watcher.Configure(_data.Watch);
+        _watcher.Start(_data.Watch.Sources);
+    }
+
     public IReadOnlyList<(string Path, RuleDecision Decision)> DryRunFolder(string folder)
     {
         if (!Directory.Exists(folder)) return Array.Empty<(string, RuleDecision)>();
-        var paths = Directory.EnumerateFileSystemEntries(folder);
-        return _rules.DryRun(paths, _data.Rules);
+        var paths = EnumerateEntries(folder, _data.Watch.Recursive);
+        return _rules.DryRun(paths, _data.Rules, _data.Watch);
     }
 
-    /// <summary>Разобрать уже существующие файлы в источниках (явное действие пользователя).</summary>
+    public IReadOnlyList<(string Path, RuleDecision Decision, string Source)> DryRunAllSources()
+    {
+        var list = new List<(string, RuleDecision, string)>();
+        foreach (var src in _data.Watch.Sources.Where(Directory.Exists))
+        {
+            foreach (var e in EnumerateEntries(src, _data.Watch.Recursive))
+            {
+                if (ShouldSkipScanPath(e)) continue;
+                var facts = FileFacts.FromPath(e, src);
+                var d = _rules.Evaluate(e, facts.Kind, _data.Rules, facts, _data.Watch);
+                list.Add((e, d, src));
+            }
+        }
+        return list;
+    }
+
     public async Task<int> ScanExistingAsync(CancellationToken ct = default)
     {
         int acted = 0;
-        var sources = _data.Watch.Sources.Where(Directory.Exists).ToList();
-        foreach (var src in sources)
+        foreach (var src in _data.Watch.Sources.Where(Directory.Exists).ToList())
         {
-            IEnumerable<string> entries;
-            try { entries = Directory.EnumerateFileSystemEntries(src); }
-            catch { continue; }
-            foreach (var path in entries)
+            foreach (var path in EnumerateEntries(src, _data.Watch.Recursive))
             {
                 ct.ThrowIfCancellationRequested();
                 if (!File.Exists(path) && !Directory.Exists(path)) continue;
@@ -98,22 +112,33 @@ public sealed class SortingOrchestrator : IDisposable
                 await _gate.WaitAsync(ct);
                 try
                 {
-                    var kind = DetectKind(path);
-                    var decision = _rules.Evaluate(path, kind, _data.Rules);
-                    if (decision.Action != RuleActionType.Ignore)
-                    {
-                        await ApplyAsync(path, kind, decision);
-                        acted++;
-                    }
+                    var facts = FileFacts.FromPath(path, src);
+                    var decision = _rules.Evaluate(path, facts.Kind, _data.Rules, facts, _data.Watch);
+                    if (await ApplyAsync(path, facts.Kind, decision, src)) acted++;
                 }
                 catch (Exception ex)
                 {
-                    await LogAsync(HistoryEvent.Error, path, null, null, null, ex.Message);
+                    await LogAsync(HistoryEvent.Error, path, null, null, null, null, ex.Message, source: src);
+                    await AddInboxAsync(path, $"Ошибка разбора: {ex.Message}", src, InboxStatus.Failed, ex.Message);
                 }
                 finally { _gate.Release(); }
             }
         }
         return acted;
+    }
+
+    private static IEnumerable<string> EnumerateEntries(string folder, bool recursive)
+    {
+        try
+        {
+            return Directory.EnumerateFileSystemEntries(folder, "*", new EnumerationOptions
+            {
+                RecurseSubdirectories = recursive,
+                IgnoreInaccessible = true,
+                AttributesToSkip = FileAttributes.System
+            });
+        }
+        catch { return Array.Empty<string>(); }
     }
 
     private bool IsAlreadyPlaced(string path)
@@ -130,18 +155,20 @@ public sealed class SortingOrchestrator : IDisposable
 
     private bool ShouldSkipScanPath(string path)
     {
-        // не трогаем управляемое хранилище витрин и служебные папки
         try
         {
             var full = Path.GetFullPath(path);
             var storageRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vitrines", "storage");
             if (VitrineStorage.IsInDirectory(full, storageRoot)) return true;
+            if (_data.Watch.ExcludeFolders.Any(f => VitrineStorage.IsInDirectory(full, f) || string.Equals(Path.GetFullPath(f).TrimEnd('\\','/'), full.TrimEnd('\\','/'), StringComparison.OrdinalIgnoreCase))) return true;
         }
         catch { }
         var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
         if (_data.Watch.TempExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)) return true;
+        if (_data.Watch.ExcludeExtensions.Any(e => string.Equals(e.TrimStart('.'), ext, StringComparison.OrdinalIgnoreCase))) return true;
         var name = Path.GetFileName(path);
         if (string.Equals(name, "desktop.ini", StringComparison.OrdinalIgnoreCase)) return true;
+        if (_data.Watch.ExcludeNameContains.Any(s => name.Contains(s, StringComparison.OrdinalIgnoreCase))) return true;
         return false;
     }
 
@@ -153,39 +180,41 @@ public sealed class SortingOrchestrator : IDisposable
         await _gate.WaitAsync();
         try
         {
-            // не трогаем закреплённые элементы
-            if (IsPinned(path)) { await LogAsync(HistoryEvent.Skipped, path, null, null, null, "Элемент закреплён вручную"); return; }
-
-            var kind = DetectKind(path);
-            var decision = _rules.Evaluate(path, kind, _data.Rules);
-            await ApplyAsync(path, kind, decision);
+            if (IsPinned(path)) { await LogAsync(HistoryEvent.Skipped, path, null, null, null, null, "Элемент закреплён вручную"); return; }
+            var facts = FileFacts.FromPath(path);
+            var decision = _rules.Evaluate(path, facts.Kind, _data.Rules, facts, _data.Watch);
+            await ApplyAsync(path, facts.Kind, decision);
         }
         catch (Exception ex)
         {
-            await LogAsync(HistoryEvent.Error, path, null, null, null, ex.Message);
+            await LogAsync(HistoryEvent.Error, path, null, null, null, null, ex.Message);
+            await AddInboxAsync(path, $"Ошибка авто-сортировки: {ex.Message}", null, InboxStatus.Failed, ex.Message);
         }
-        finally
-        {
-            _gate.Release();
-        }
+        finally { _gate.Release(); }
     }
 
-    private async Task ApplyAsync(string path, ItemKind kind, RuleDecision decision)
+    private async Task<bool> ApplyAsync(string path, ItemKind kind, RuleDecision decision, string? source = null)
     {
         switch (decision.Action)
         {
             case RuleActionType.Ignore:
-                await LogAsync(HistoryEvent.Skipped, path, null, null, decision.MatchedRule?.Id, decision.Reason);
-                return;
+                // исключения — тихий пропуск в журнал; "нет правил" обрабатывается политикой в движке (SendToInbox/Place/Ignore)
+                await LogAsync(HistoryEvent.Skipped, path, null, null, decision.MatchedRule?.Id, decision.MatchedRule?.Name, decision.Reason, source: source);
+                return false;
+
+            case RuleActionType.SendToInbox:
+                await AddInboxAsync(path, decision.Reason, source, InboxStatus.Pending);
+                await LogAsync(HistoryEvent.SentToInbox, path, path, _data.Watch.UnmatchedVitrineName, decision.MatchedRule?.Id, decision.MatchedRule?.Name, decision.Reason, source: source);
+                return true;
 
             case RuleActionType.MoveToFolder:
             {
                 var targetDir = decision.MatchedRule?.Action.TargetFolderPath;
                 if (string.IsNullOrWhiteSpace(targetDir))
-                { await LogAsync(HistoryEvent.Skipped, path, null, null, decision.MatchedRule?.Id, "Не задана целевая папка"); return; }
+                { await LogAsync(HistoryEvent.Skipped, path, null, null, decision.MatchedRule?.Id, decision.MatchedRule?.Name, "Не задана целевая папка", source: source); return false; }
                 var final = await MoveTrackedAsync(path, targetDir);
-                await LogAsync(HistoryEvent.Moved, path, path, final, decision.MatchedRule?.Id, decision.Reason, undoData: path);
-                return;
+                await LogAsync(HistoryEvent.Moved, path, path, final, decision.MatchedRule?.Id, decision.MatchedRule?.Name, decision.Reason, undoData: path, source: source);
+                return true;
             }
 
             case RuleActionType.PlaceInVitrine:
@@ -193,9 +222,12 @@ public sealed class SortingOrchestrator : IDisposable
             {
                 var vitrine = ResolveOrCreateVitrine(decision);
                 if (vitrine == null)
-                { await LogAsync(HistoryEvent.Skipped, path, null, null, decision.MatchedRule?.Id, "Не удалось определить витрину"); return; }
+                {
+                    await AddInboxAsync(path, "Не удалось определить витрину", source, InboxStatus.Failed);
+                    await LogAsync(HistoryEvent.Error, path, null, null, decision.MatchedRule?.Id, decision.MatchedRule?.Name, "Не удалось определить витрину", source: source);
+                    return false;
+                }
 
-                // Портал = перенос в реальную папку. Коллекция = перенос в управляемую папку витрины (физическая сортировка).
                 string effectivePath = path;
                 string? undo = null;
                 if (vitrine.Kind == VitrineKind.Portal && !string.IsNullOrWhiteSpace(vitrine.FolderPath))
@@ -206,7 +238,6 @@ public sealed class SortingOrchestrator : IDisposable
                 else if (vitrine.Kind == VitrineKind.Collection)
                 {
                     var storage = VitrineStorage.GetManagedFolder(vitrine);
-                    // если файл уже лежит в целевой управляемой папке — не двигаем
                     if (!VitrineStorage.IsInDirectory(path, storage))
                     {
                         effectivePath = await MoveTrackedAsync(path, storage);
@@ -221,15 +252,15 @@ public sealed class SortingOrchestrator : IDisposable
                     Kind = kind,
                     PlacedByRuleId = decision.MatchedRule?.Id
                 };
-                // не дублируем один и тот же путь
                 if (!vitrine.Items.Any(i => string.Equals(i.Path, effectivePath, StringComparison.OrdinalIgnoreCase)))
                     vitrine.Items.Add(item);
 
                 await _store.SaveLayoutAsync(_data);
-                await LogAsync(HistoryEvent.Placed, effectivePath, path, vitrine.Name, decision.MatchedRule?.Id, decision.Reason, undoData: undo);
-                return;
+                await LogAsync(HistoryEvent.Placed, effectivePath, path, vitrine.Name, decision.MatchedRule?.Id, decision.MatchedRule?.Name, decision.Reason, undoData: undo, source: source);
+                return true;
             }
         }
+        return false;
     }
 
     private Vitrine? ResolveOrCreateVitrine(RuleDecision decision)
@@ -239,18 +270,18 @@ public sealed class SortingOrchestrator : IDisposable
             var v = _data.Vitrines.FirstOrDefault(x => x.Id == id);
             if (v != null) return v;
         }
-        if (decision.Action == RuleActionType.CreateVitrineAndPlace)
+        var name = string.IsNullOrWhiteSpace(decision.TargetVitrineName) ? decision.MatchedRule?.Action.CreateVitrineName : decision.TargetVitrineName;
+        if (decision.Action == RuleActionType.CreateVitrineAndPlace || !string.IsNullOrWhiteSpace(name))
         {
-            var name = string.IsNullOrWhiteSpace(decision.TargetVitrineName) ? "Новая витрина" : decision.TargetVitrineName!;
+            name = string.IsNullOrWhiteSpace(name) ? "Новая витрина" : name!;
             var existing = _data.Vitrines.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
             if (existing != null) return existing;
             var created = new Vitrine { Name = name, Kind = VitrineKind.Collection };
-            // простая раскладка каскадом, чтобы не накладывать
             created.X = 40 + (_data.Vitrines.Count % 6) * 40;
             created.Y = 40 + (_data.Vitrines.Count % 6) * 30;
             _data.Vitrines.Add(created);
             _ = _store.SaveLayoutAsync(_data);
-            _ = LogAsync(HistoryEvent.CreatedVitrine, name, null, name, decision.MatchedRule?.Id, "Создана новая витрина для класса элементов");
+            _ = LogAsync(HistoryEvent.CreatedVitrine, name, null, name, decision.MatchedRule?.Id, decision.MatchedRule?.Name, "Создана новая витрина");
             return created;
         }
         return null;
@@ -278,28 +309,69 @@ public sealed class SortingOrchestrator : IDisposable
         });
     }
 
-    private static ItemKind DetectKind(string path)
+    public async Task AddInboxAsync(string path, string reason, string? source, InboxStatus status, string? error = null)
     {
-        if (Directory.Exists(path)) return ItemKind.Folder;
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext == ".lnk") return ItemKind.Shortcut;
-        if (ext is ".exe" or ".msi" or ".bat" or ".cmd") return ItemKind.Application;
-        return ItemKind.File;
+        try
+        {
+            string full = path;
+            try { full = Path.GetFullPath(path); } catch { }
+            var existing = _data.Inbox.FirstOrDefault(i => string.Equals(i.Path, full, StringComparison.OrdinalIgnoreCase) && i.Status == InboxStatus.Pending);
+            if (existing != null) { existing.Reason = reason; existing.At = DateTimeOffset.Now; existing.LastError = error; existing.Status = status; existing.Source = source ?? existing.Source; }
+            else _data.Inbox.Insert(0, new InboxEntry { Path = full, DisplayName = Path.GetFileName(full), Reason = reason, Source = source, Status = status, LastError = error });
+            if (_data.Inbox.Count > 500) _data.Inbox = _data.Inbox.Take(500).ToList();
+            await _store.SaveSettingsAsync(_data);
+            OnStateChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch { }
     }
 
-    // storage helpers moved to VitrineStorage
+    public async Task ResolveInboxToVitrineAsync(Guid id, string vitrineName, CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            var item = _data.Inbox.FirstOrDefault(i => i.Id == id);
+            if (item == null) return;
+            if (File.Exists(item.Path) || Directory.Exists(item.Path))
+            {
+                var vit = _data.Vitrines.FirstOrDefault(v => string.Equals(v.Name, vitrineName, StringComparison.OrdinalIgnoreCase))
+                          ?? new Vitrine { Name = vitrineName, Kind = VitrineKind.Collection };
+                if (!_data.Vitrines.Contains(vit)) _data.Vitrines.Add(vit);
+                var storage = VitrineStorage.GetManagedFolder(vit);
+                var final = await MoveTrackedAsync(item.Path, storage);
+                var vi = new VitrineItem { Path = final, DisplayName = Path.GetFileName(final), Kind = FileFacts.DetectKind(final) };
+                if (!vit.Items.Any(i => string.Equals(i.Path, final, StringComparison.OrdinalIgnoreCase))) vit.Items.Add(vi);
+                item.Status = InboxStatus.Resolved;
+                await LogAsync(HistoryEvent.Placed, final, item.Path, vit.Name, null, null, "Разобрано вручную из «Неразобранного»", undoData: item.Path, source: item.Source);
+            }
+            else { item.Status = InboxStatus.Failed; item.LastError = "Файл не найден"; }
+            await _store.SaveLayoutAsync(_data, ct);
+            await _store.SaveSettingsAsync(_data, ct);
+            OnStateChanged?.Invoke(this, EventArgs.Empty);
+        }
+        finally { _gate.Release(); }
+    }
 
-    private async Task LogAsync(HistoryEvent ev, string itemPath, string? from, string? to, Guid? ruleId, string reason, string? undoData = null)
+    public async Task DismissInboxAsync(Guid id, CancellationToken ct = default)
+    {
+        var item = _data.Inbox.FirstOrDefault(i => i.Id == id);
+        if (item != null) { item.Status = InboxStatus.Dismissed; await _store.SaveSettingsAsync(_data, ct); OnStateChanged?.Invoke(this, EventArgs.Empty); }
+    }
+
+    public async Task ClearResolvedInboxAsync(CancellationToken ct = default)
+    {
+        _data.Inbox.RemoveAll(i => i.Status is InboxStatus.Resolved or InboxStatus.Dismissed);
+        await _store.SaveSettingsAsync(_data, ct);
+        OnStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private async Task LogAsync(HistoryEvent ev, string itemPath, string? from, string? to, Guid? ruleId, string? ruleName, string reason, string? undoData = null, string? source = null)
     {
         var entry = new HistoryEntry
         {
-            Event = ev,
-            ItemPath = itemPath,
-            From = from,
-            To = to,
-            RuleId = ruleId,
-            Reason = reason,
-            UndoData = undoData
+            Event = ev, ItemPath = itemPath, From = from, To = to,
+            RuleId = ruleId, RuleName = ruleName ?? _data.Rules.FirstOrDefault(r => r.Id == ruleId)?.Name,
+            Reason = reason, UndoData = undoData, Source = source
         };
         await _store.AppendHistoryAsync(entry);
         OnHistory?.Invoke(this, entry);
@@ -310,18 +382,7 @@ public sealed class SortingOrchestrator : IDisposable
         var names = new[] { "Изображения", "Документы", "Архивы", "Установщики", "Ярлыки" };
         var list = new List<Vitrine>();
         for (int i = 0; i < names.Length; i++)
-        {
-            list.Add(new Vitrine
-            {
-                Name = names[i],
-                Kind = VitrineKind.Collection,
-                X = 40 + (i % 3) * 340,
-                Y = 40 + (i / 3) * 270,
-                Width = 320,
-                Height = 240
-            });
-        }
-        // отдельная витрина для «Неразобранное» (пользователь может складывать вручную)
+            list.Add(new Vitrine { Name = names[i], Kind = VitrineKind.Collection, X = 40 + (i % 3) * 340, Y = 40 + (i / 3) * 270, Width = 320, Height = 240 });
         list.Add(new Vitrine { Name = "Неразобранное", Kind = VitrineKind.Collection, X = 40 + (2 * 340), Y = 40 + (1 * 270), Width = 320, Height = 240 });
         return list;
     }
@@ -338,36 +399,54 @@ public sealed class SortingOrchestrator : IDisposable
 
     public void MarkSelfProduced(string path) => _watcher.MarkSelfProduced(path);
 
-    /// <summary>Откат последнего обратимого действия (перемещения).</summary>
-    public async Task<bool> UndoLastAsync(CancellationToken ct = default)
+    public async Task<bool> UndoLastAsync(CancellationToken ct = default) => await UndoManyAsync(1, ct) > 0;
+
+    public async Task<int> UndoManyAsync(int count, CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct);
         try
         {
-            var history = await _store.ReadHistoryAsync(50, ct);
-            var entry = history.FirstOrDefault(h => h.Event is HistoryEvent.Moved or HistoryEvent.Placed && !string.IsNullOrEmpty(h.UndoData));
-            if (entry == null || string.IsNullOrEmpty(entry.UndoData)) return false;
-
-            var current = entry.ItemPath;
-            var original = entry.UndoData!;
-            if (!File.Exists(current) && !Directory.Exists(current)) return false;
-
-            _watcher.MarkSelfProduced(current);
-            _watcher.MarkSelfProduced(original);
-            await _fileOps.UndoMoveAsync(current, original, ct);
-            _watcher.MarkSelfProduced(original);
-
-            // убрать/обновить ссылку в витрине, если указывает на current
-            foreach (var v in _data.Vitrines)
+            var all = (await _store.ReadHistoryAsync(0, ct)).ToList();
+            var targets = all.Where(h => !h.Undone && (h.Event is HistoryEvent.Moved or HistoryEvent.Placed) && !string.IsNullOrEmpty(h.UndoData)).TakeLast(count).ToList();
+            int undone = 0;
+            foreach (var entry in targets)
             {
-                var it = v.Items.FirstOrDefault(i => string.Equals(i.Path, current, StringComparison.OrdinalIgnoreCase));
-                if (it != null) it.Path = original;
+                try
+                {
+                    var current = entry.ItemPath;
+                    var original = entry.UndoData!;
+                    if (!File.Exists(current) && !Directory.Exists(current)) continue;
+                    _watcher.MarkSelfProduced(current);
+                    _watcher.MarkSelfProduced(original);
+                    await _fileOps.UndoMoveAsync(current, original, ct);
+                    _watcher.MarkSelfProduced(original);
+                    foreach (var v in _data.Vitrines)
+                    {
+                        var it = v.Items.FirstOrDefault(i => string.Equals(i.Path, current, StringComparison.OrdinalIgnoreCase));
+                        if (it != null) it.Path = original;
+                    }
+                    entry.Undone = true;
+                    all.Add(new HistoryEntry { Event = HistoryEvent.Undone, ItemPath = original, From = current, To = original, RuleId = entry.RuleId, RuleName = entry.RuleName, Reason = $"Откат: {Path.GetFileName(original)}" });
+                    undone++;
+                }
+                catch { }
             }
-            await _store.SaveLayoutAsync(_data, ct);
-            await LogAsync(HistoryEvent.Undone, original, current, original, entry.RuleId, "Откат перемещения", undoData: null);
-            return true;
+            if (undone > 0)
+            {
+                await _store.SaveLayoutAsync(_data, ct);
+                await _store.SaveHistoryAsync(all, ct);
+                OnStateChanged?.Invoke(this, EventArgs.Empty);
+            }
+            return undone;
         }
         finally { _gate.Release(); }
+    }
+
+    public async Task SaveAllAsync(CancellationToken ct = default)
+    {
+        await _store.SaveLayoutAsync(_data, ct);
+        await _store.SaveRulesAsync(_data, ct);
+        await _store.SaveSettingsAsync(_data, ct);
     }
 
     public void Dispose()
@@ -377,4 +456,3 @@ public sealed class SortingOrchestrator : IDisposable
         _gate.Dispose();
     }
 }
-

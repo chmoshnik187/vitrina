@@ -4,7 +4,6 @@ using Vitrines.Core.Models;
 
 namespace Vitrines.Core.Storage;
 
-/// <summary>JSON-хранилище раскладки/правил/журнала в %LOCALAPPDATA%\Vitrines.</summary>
 public sealed class JsonWorkspaceStore : IWorkspaceStore
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -18,6 +17,7 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
     private readonly string _rulesPath;
     private readonly string _settingsPath;
     private readonly string _historyPath;
+    private readonly string _inboxPath;
 
     public JsonWorkspaceStore(string? root = null)
     {
@@ -26,6 +26,7 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
         _rulesPath = Path.Combine(_root, "rules.json");
         _settingsPath = Path.Combine(_root, "settings.json");
         _historyPath = Path.Combine(_root, "history.jsonl");
+        _inboxPath = Path.Combine(_root, "inbox.json");
     }
 
     public async Task<WorkspaceData> LoadAsync(CancellationToken ct = default)
@@ -38,31 +39,37 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
             data.Rules = await ReadAsync<List<SortingRule>>(_rulesPath, ct) ?? new();
         if (File.Exists(_settingsPath))
             data.Watch = await ReadAsync<WatchSettings>(_settingsPath, ct) ?? new();
+        if (File.Exists(_inboxPath))
+            data.Inbox = await ReadAsync<List<InboxEntry>>(_inboxPath, ct) ?? new();
+        // нормализация на случай новых полей/старых данных
+        data.Watch ??= new WatchSettings();
+        data.Watch.Appearance ??= new AppearanceSettings();
+        data.Watch.Sources ??= new();
+        data.Watch.TempExtensions ??= new() { "crdownload", "part", "tmp", "download" };
+        data.Watch.ExcludeFolders ??= new();
+        data.Watch.ExcludeExtensions ??= new();
+        data.Watch.ExcludeNameContains ??= new();
+        data.Inbox ??= new();
+        foreach (var r in data.Rules) r.Condition ??= new RuleCondition();
         return data;
     }
 
     public async Task SaveLayoutAsync(WorkspaceData data, CancellationToken ct = default)
-    {
-        Directory.CreateDirectory(_root);
-        await WriteAsync(_layoutPath, data.Vitrines, ct);
-    }
+    { Directory.CreateDirectory(_root); await WriteAsync(_layoutPath, data.Vitrines, ct); }
 
     public async Task SaveRulesAsync(WorkspaceData data, CancellationToken ct = default)
-    {
-        Directory.CreateDirectory(_root);
-        await WriteAsync(_rulesPath, data.Rules, ct);
-    }
+    { Directory.CreateDirectory(_root); await WriteAsync(_rulesPath, data.Rules, ct); }
 
     public async Task SaveSettingsAsync(WorkspaceData data, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_root);
         await WriteAsync(_settingsPath, data.Watch, ct);
+        await WriteAsync(_inboxPath, data.Inbox, ct);
     }
 
     public async Task AppendHistoryAsync(HistoryEntry entry, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_root);
-        // JSONL: одна запись = одна строка, без форматирования
         var line = JsonSerializer.Serialize(entry);
         await File.AppendAllTextAsync(_historyPath, line + Environment.NewLine, Encoding.UTF8, ct);
     }
@@ -70,15 +77,38 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
     public async Task<IReadOnlyList<HistoryEntry>> ReadHistoryAsync(int take = 200, CancellationToken ct = default)
     {
         if (!File.Exists(_historyPath)) return Array.Empty<HistoryEntry>();
+        // читаем все строки, чтобы корректно поддерживать мульти-undo и фильтры; возвращаем последние take
         var lines = await File.ReadAllLinesAsync(_historyPath, ct);
-        var list = new List<HistoryEntry>(Math.Min(lines.Length, take));
-        foreach (var line in Enumerable.Reverse(lines).Take(take))
+        var list = new List<HistoryEntry>(lines.Length);
+        foreach (var line in lines)
         {
             if (string.IsNullOrWhiteSpace(line)) continue;
-            try { var e = JsonSerializer.Deserialize<HistoryEntry>(line, JsonOpts); if (e != null) list.Add(e); }
-            catch { /* повреждённая строка журнала не должна ломать загрузку */ }
+            try
+            {
+                // поддержка и старых многострочных/битых записей маловероятна, но пробуем оба варианта опций
+                var e = JsonSerializer.Deserialize<HistoryEntry>(line, JsonOpts) ?? JsonSerializer.Deserialize<HistoryEntry>(line);
+                if (e != null) list.Add(e);
+            }
+            catch { }
         }
-        return list;
+        if (take <= 0 || take >= list.Count) return list.AsReadOnly();
+        return list.TakeLast(take).ToList().AsReadOnly();
+    }
+
+    public async Task SaveHistoryAsync(IReadOnlyList<HistoryEntry> entries, CancellationToken ct = default)
+    {
+        Directory.CreateDirectory(_root);
+        var tmp = _historyPath + ".tmp";
+        await using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        await using (var sw = new StreamWriter(fs, Encoding.UTF8))
+        {
+            foreach (var e in entries)
+            {
+                var line = JsonSerializer.Serialize(e);
+                await sw.WriteLineAsync(line.AsMemory(), ct);
+            }
+        }
+        File.Move(tmp, _historyPath, overwrite: true);
     }
 
     private static async Task<T?> ReadAsync<T>(string path, CancellationToken ct)

@@ -2,7 +2,6 @@ using Vitrines.Core.Models;
 
 namespace Vitrines.Core.Storage;
 
-/// <summary>Хранение раскладки, правил и журнала (JSON в %LOCALAPPDATA%\Vitrines).</summary>
 public interface IWorkspaceStore
 {
     Task<WorkspaceData> LoadAsync(CancellationToken ct = default);
@@ -11,6 +10,7 @@ public interface IWorkspaceStore
     Task SaveSettingsAsync(WorkspaceData data, CancellationToken ct = default);
     Task AppendHistoryAsync(HistoryEntry entry, CancellationToken ct = default);
     Task<IReadOnlyList<HistoryEntry>> ReadHistoryAsync(int take = 200, CancellationToken ct = default);
+    Task SaveHistoryAsync(IReadOnlyList<HistoryEntry> entries, CancellationToken ct = default);
 }
 
 public sealed class WorkspaceData
@@ -18,19 +18,48 @@ public sealed class WorkspaceData
     public List<Vitrine> Vitrines { get; set; } = new();
     public List<SortingRule> Rules { get; set; } = new();
     public WatchSettings Watch { get; set; } = new();
+    public List<InboxEntry> Inbox { get; set; } = new();
 }
 
 public sealed class WatchSettings
 {
-    /// <summary>Папки-источники для наблюдения (Рабочий стол, Загрузки и т.д.).</summary>
     public List<string> Sources { get; set; } = new();
-
-    /// <summary>Сколько секунд файл должен быть стабильным (размер/время не меняются), прежде чем сортировать.</summary>
     public int StableSeconds { get; set; } = 3;
-
-    /// <summary>Игнорируемые расширения временных/незавершённых файлов.</summary>
     public List<string> TempExtensions { get; set; } = new() { "crdownload", "part", "tmp", "download" };
-
-    /// <summary>Безопасный дефолт: автоматика выключена, пока пользователь явно не включит.</summary>
+    /// <summary>Автоматика выключена по умолчанию (безопасно).</summary>
     public bool AutomationEnabled { get; set; } = false;
+    /// <summary>Следить за подпапками источников (рекурсивно).</summary>
+    public bool Recursive { get; set; } = false;
+
+    // Исключения (глобальные «не трогать»)
+    public List<string> ExcludeFolders { get; set; } = new();
+    public List<string> ExcludeExtensions { get; set; } = new();
+    public List<string> ExcludeNameContains { get; set; } = new();
+
+    // Политика для неподошедших
+    public UnmatchedPolicy Unmatched { get; set; } = UnmatchedPolicy.Ignore;
+    public string UnmatchedVitrineName { get; set; } = "Неразобранное";
+
+    // Внешний вид/поведение (глобально)
+    public AppearanceSettings Appearance { get; set; } = new();
+}
+
+public enum UnmatchedPolicy
+{
+    Ignore,
+    SendToInbox,
+    PlaceInVitrine
+}
+
+public sealed class AppearanceSettings
+{
+    /// <summary>Тема: dark, light, glass</summary>
+    public string Theme { get; set; } = "dark";
+    /// <summary>Акцентный цвет (#RRGGBB)</summary>
+    public string Accent { get; set; } = "#7C9CFF";
+    public int TileSize { get; set; } = 92;
+    public string Density { get; set; } = "normal"; // compact, normal, comfortable
+    public double FontScale { get; set; } = 1.0;
+    public bool Animations { get; set; } = true;
+    public bool ShowBadges { get; set; } = true;
 }
