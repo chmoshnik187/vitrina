@@ -13,10 +13,12 @@ public sealed class FileWatcherService : IFileWatcherService
     private readonly List<FileSystemWatcher> _watchers = new();
     private readonly ConcurrentDictionary<string, Pending> _pending = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _selfProduced = new(StringComparer.OrdinalIgnoreCase);
-    private readonly CancellationTokenSource _cts = new();
+    private CancellationTokenSource _cts = new();
     private readonly object _gate = new();
+    private Task? _loopTask;
 
     public event EventHandler<StableFileEventArgs>? FileReady;
+    public event EventHandler<WatcherErrorEventArgs>? Error;
 
     public FileWatcherService(WatchSettings? settings = null) => _settings = settings ?? new WatchSettings();
 
@@ -25,6 +27,19 @@ public sealed class FileWatcherService : IFileWatcherService
     public void Start(IEnumerable<string> sourcePaths)
     {
         StopWatchers();
+
+        CancellationToken token;
+        lock (_gate)
+        {
+            if (_cts.IsCancellationRequested)
+            {
+                try { _cts.Dispose(); } catch { }
+                _cts = new CancellationTokenSource();
+            }
+            token = _cts.Token;
+            _pending.Clear();
+        }
+
         foreach (var path in sourcePaths.Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             try
@@ -38,37 +53,74 @@ public sealed class FileWatcherService : IFileWatcherService
                 };
                 w.Created += OnFsEvent;
                 w.Changed += OnFsEvent;
+                w.Deleted += OnDeleted;
                 w.Renamed += OnRenamed;
-                _watchers.Add(w);
+                w.Error += (_, e) => OnWatcherError(path, e.GetException());
+                lock (_gate) _watchers.Add(w);
             }
             catch { /* источник недоступен — пропускаем */ }
         }
-        _ = Task.Run(LoopAsync);
+
+        _loopTask = Task.Run(() => LoopAsync(token), token);
     }
 
     public void Stop()
     {
-        _cts.Cancel();
+        try { _cts.Cancel(); } catch { }
         StopWatchers();
     }
 
     public void MarkSelfProduced(string path)
     {
-        var full = Path.GetFullPath(path);
-        _selfProduced[full] = DateTimeOffset.UtcNow.AddSeconds(Math.Max(10, _settings.StableSeconds * 4));
+        try
+        {
+            var full = Path.GetFullPath(path);
+            _selfProduced[full] = DateTimeOffset.UtcNow.AddSeconds(Math.Max(10, _settings.StableSeconds * 4));
+        }
+        catch { }
     }
 
     private void StopWatchers()
     {
         lock (_gate)
         {
-            foreach (var w in _watchers) { w.EnableRaisingEvents = false; w.Dispose(); }
+            foreach (var w in _watchers)
+            {
+                try { w.EnableRaisingEvents = false; } catch { }
+                try { w.Dispose(); } catch { }
+            }
             _watchers.Clear();
         }
     }
 
     private void OnFsEvent(object sender, FileSystemEventArgs e) => Touch(e.FullPath, e.ChangeType);
-    private void OnRenamed(object sender, RenamedEventArgs e) => Touch(e.FullPath, e.ChangeType);
+    private void OnDeleted(object sender, FileSystemEventArgs e)
+    {
+        try { _pending.TryRemove(Path.GetFullPath(e.FullPath), out _); } catch { }
+    }
+    private void OnRenamed(object sender, RenamedEventArgs e)
+    {
+        try { _pending.TryRemove(Path.GetFullPath(e.OldFullPath), out _); } catch { }
+        Touch(e.FullPath, e.ChangeType);
+    }
+
+    private void OnWatcherError(string sourcePath, Exception? ex)
+    {
+        var overflow = ex is InternalBufferOverflowException;
+        try
+        {
+            Error?.Invoke(this, new WatcherErrorEventArgs
+            {
+                SourcePath = sourcePath,
+                Exception = ex,
+                BufferOverflow = overflow,
+                Message = overflow
+                    ? "Переполнение буфера наблюдателя: возможна потеря части событий, рекомендуется выполнить «Разобрать сейчас»."
+                    : (ex?.Message ?? "Ошибка наблюдателя файловой системы.")
+            });
+        }
+        catch { }
+    }
 
     private void Touch(string path, WatcherChangeTypes changeType)
     {
@@ -90,6 +142,7 @@ public sealed class FileWatcherService : IFileWatcherService
         catch { }
         if (IsSelfProduced(full)) return;
 
+        if (_pending.Count > 20000 && !_pending.ContainsKey(full)) return;
         _pending.AddOrUpdate(full,
             _ => Pending.New(changeType),
             (_, p) => { p.Touch(changeType); return p; });
@@ -118,13 +171,25 @@ public sealed class FileWatcherService : IFileWatcherService
         return false;
     }
 
-    private async Task LoopAsync()
+    private async Task LoopAsync(CancellationToken token)
     {
-        var token = _cts.Token;
         while (!token.IsCancellationRequested)
         {
             try { await Task.Delay(750, token); } catch { break; }
             var now = DateTimeOffset.UtcNow;
+
+            // периодическая очистка устаревших меток self-produced
+            foreach (var sp in _selfProduced)
+                if (sp.Value < now.AddSeconds(-2)) _selfProduced.TryRemove(sp.Key, out _);
+
+            // защита от неограниченного роста очереди при всплесках событий
+            const int maxPending = 10000;
+            if (_pending.Count > maxPending)
+            {
+                foreach (var kv in _pending.OrderBy(k => k.Value.LastTouched).Take(_pending.Count - maxPending))
+                    _pending.TryRemove(kv.Key, out _);
+            }
+
             foreach (var kv in _pending)
             {
                 if (token.IsCancellationRequested) break;
@@ -187,7 +252,7 @@ public sealed class FileWatcherService : IFileWatcherService
     public void Dispose()
     {
         Stop();
-        _cts.Dispose();
+        try { _cts.Dispose(); } catch { }
     }
 
     private sealed class Pending

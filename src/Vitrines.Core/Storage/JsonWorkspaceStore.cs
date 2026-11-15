@@ -1,11 +1,14 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Vitrines.Core.Models;
 
 namespace Vitrines.Core.Storage;
 
 public sealed class JsonWorkspaceStore : IWorkspaceStore
 {
+    public const int CurrentSchemaVersion = 1;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -33,14 +36,22 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
     {
         Directory.CreateDirectory(_root);
         var data = new WorkspaceData();
+
         if (File.Exists(_layoutPath))
-            data.Vitrines = await ReadAsync<List<Vitrine>>(_layoutPath, ct) ?? new();
+            data.Vitrines = await ReadVersionedListAsync<Vitrine>(_layoutPath, "vitrines", ct) ?? new();
         if (File.Exists(_rulesPath))
-            data.Rules = await ReadAsync<List<SortingRule>>(_rulesPath, ct) ?? new();
+            data.Rules = await ReadVersionedListAsync<SortingRule>(_rulesPath, "rules", ct) ?? new();
         if (File.Exists(_settingsPath))
-            data.Watch = await ReadAsync<WatchSettings>(_settingsPath, ct) ?? new();
+            data.Watch = await ReadVersionedObjectAsync<WatchSettings>(_settingsPath, "watch", ct) ?? new();
         if (File.Exists(_inboxPath))
-            data.Inbox = await ReadAsync<List<InboxEntry>>(_inboxPath, ct) ?? new();
+            data.Inbox = await ReadVersionedListAsync<InboxEntry>(_inboxPath, "inbox", ct) ?? new();
+
+        Normalize(data);
+        return data;
+    }
+
+    private static void Normalize(WorkspaceData data)
+    {
         // нормализация на случай новых полей/старых данных
         data.Vitrines ??= new();
         data.Rules ??= new();
@@ -60,20 +71,25 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
             r.Condition ??= new RuleCondition();
             r.Action ??= new RuleAction();
         }
-        return data;
     }
 
     public async Task SaveLayoutAsync(WorkspaceData data, CancellationToken ct = default)
-    { Directory.CreateDirectory(_root); await WriteAsync(_layoutPath, data.Vitrines, ct); }
+    {
+        Directory.CreateDirectory(_root);
+        await WriteVersionedListAsync(_layoutPath, "vitrines", data.Vitrines, ct);
+    }
 
     public async Task SaveRulesAsync(WorkspaceData data, CancellationToken ct = default)
-    { Directory.CreateDirectory(_root); await WriteAsync(_rulesPath, data.Rules, ct); }
+    {
+        Directory.CreateDirectory(_root);
+        await WriteVersionedListAsync(_rulesPath, "rules", data.Rules, ct);
+    }
 
     public async Task SaveSettingsAsync(WorkspaceData data, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_root);
-        await WriteAsync(_settingsPath, data.Watch, ct);
-        await WriteAsync(_inboxPath, data.Inbox, ct);
+        await WriteVersionedObjectAsync(_settingsPath, "watch", data.Watch, ct);
+        await WriteVersionedListAsync(_inboxPath, "inbox", data.Inbox, ct);
     }
 
     public async Task AppendHistoryAsync(HistoryEntry entry, CancellationToken ct = default)
@@ -120,17 +136,85 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
         File.Move(tmp, _historyPath, overwrite: true);
     }
 
-    private static async Task<T?> ReadAsync<T>(string path, CancellationToken ct)
+    private async Task<List<T>?> ReadVersionedListAsync<T>(string path, string key, CancellationToken ct)
     {
-        await using var fs = File.OpenRead(path);
-        return await JsonSerializer.DeserializeAsync<T>(fs, JsonOpts, ct);
+        try
+        {
+            await using var fs = File.OpenRead(path);
+            var node = await JsonNode.ParseAsync(fs, cancellationToken: ct);
+            if (node is JsonArray arr)
+                return arr.Deserialize<List<T>>(JsonOpts); // legacy v0
+            if (node is JsonObject obj)
+            {
+                // envelope v1+: { schemaVersion, <key>: [...] }
+                if (obj[key] is JsonArray dataArr)
+                    return dataArr.Deserialize<List<T>>(JsonOpts);
+                // fallback: try whole object only if not matching (unlikely)
+            }
+            return null;
+        }
+        catch
+        {
+            // повреждённый/частичный файл — не валим загрузку всего рабочего пространства
+            return null;
+        }
     }
 
-    private static async Task WriteAsync<T>(string path, T value, CancellationToken ct)
+    private async Task<T?> ReadVersionedObjectAsync<T>(string path, string key, CancellationToken ct) where T : class
     {
-        var tmp = path + ".tmp";
-        await using (var fs = File.Create(tmp))
-            await JsonSerializer.SerializeAsync(fs, value, JsonOpts, ct);
-        File.Move(tmp, path, overwrite: true);
+        try
+        {
+            await using var fs = File.OpenRead(path);
+            var node = await JsonNode.ParseAsync(fs, cancellationToken: ct);
+            if (node is JsonObject obj)
+            {
+                // v1 envelope: { schemaVersion, <key>: { ... } }
+                if (obj.ContainsKey("schemaVersion") && obj[key] is JsonObject inner)
+                    return inner.Deserialize<T>(JsonOpts);
+                // legacy v0: raw object
+                if (!obj.ContainsKey("schemaVersion"))
+                    return obj.Deserialize<T>(JsonOpts);
+            }
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task WriteVersionedListAsync<T>(string path, string key, List<T> value, CancellationToken ct)
+    {
+        var envelope = new JsonObject
+        {
+            ["schemaVersion"] = CurrentSchemaVersion,
+            [key] = JsonSerializer.SerializeToNode(value, JsonOpts)
+        };
+        await WriteNodeAsync(path, envelope, ct);
+    }
+
+    private static async Task WriteVersionedObjectAsync<T>(string path, string key, T value, CancellationToken ct)
+    {
+        var envelope = new JsonObject
+        {
+            ["schemaVersion"] = CurrentSchemaVersion,
+            [key] = JsonSerializer.SerializeToNode(value, JsonOpts)
+        };
+        await WriteNodeAsync(path, envelope, ct);
+    }
+
+    private static async Task WriteNodeAsync(string path, JsonNode node, CancellationToken ct)
+    {
+        var tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
+        try
+        {
+            await using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                await JsonSerializer.SerializeAsync(fs, node, JsonOpts, ct);
+            File.Move(tmp, path, overwrite: true);
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+        }
     }
 }

@@ -41,6 +41,20 @@ public sealed class WorkspaceSnapshotService
             var path = Path.Combine(_root, name);
             if (File.Exists(path)) archive.CreateEntryFromFile(path, name, CompressionLevel.Optimal);
         }
+
+        var manifest = new
+        {
+            schemaVersion = 1,
+            createdAt = DateTimeOffset.UtcNow,
+            files = SnapshotFiles.ToDictionary(f => f, _ => 1)
+        };
+        var m = archive.CreateEntry("manifest.json", CompressionLevel.Optimal);
+        await using var ms = m.Open();
+        await System.Text.Json.JsonSerializer.SerializeAsync(ms, manifest, new System.Text.Json.JsonSerializerOptions
+        {
+            WriteIndented = true,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        }, ct);
     }
 
     public async Task ImportAsync(string zipPath, CancellationToken ct = default)

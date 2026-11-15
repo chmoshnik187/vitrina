@@ -230,7 +230,7 @@ public sealed class SortingOrchestrator : IDisposable
             case RuleActionType.PlaceInVitrine:
             case RuleActionType.CreateVitrineAndPlace:
             {
-                var vitrine = ResolveOrCreateVitrine(decision);
+                var vitrine = await ResolveOrCreateVitrineAsync(decision);
                 if (vitrine == null)
                 {
                     await AddInboxAsync(path, "Не удалось определить витрину", source, InboxStatus.Failed);
@@ -291,7 +291,7 @@ public sealed class SortingOrchestrator : IDisposable
         return false;
     }
 
-    private Vitrine? ResolveOrCreateVitrine(RuleDecision decision)
+    private async Task<Vitrine?> ResolveOrCreateVitrineAsync(RuleDecision decision)
     {
         if (decision.TargetVitrineId is Guid id)
         {
@@ -308,8 +308,8 @@ public sealed class SortingOrchestrator : IDisposable
             created.X = 40 + (_data.Vitrines.Count % 6) * 40;
             created.Y = 40 + (_data.Vitrines.Count % 6) * 30;
             _data.Vitrines.Add(created);
-            _ = _store.SaveLayoutAsync(_data);
-            _ = LogAsync(HistoryEvent.CreatedVitrine, name, null, name, decision.MatchedRule?.Id, decision.MatchedRule?.Name, "Создана новая витрина");
+            await _store.SaveLayoutAsync(_data);
+            await LogAsync(HistoryEvent.CreatedVitrine, name, null, name, decision.MatchedRule?.Id, decision.MatchedRule?.Name, "Создана новая витрина");
             return created;
         }
         return null;
@@ -317,14 +317,13 @@ public sealed class SortingOrchestrator : IDisposable
 
     private async Task<string> MoveTrackedAsync(string source, string targetDir)
     {
-        var fullTarget = Path.GetFullPath(Path.Combine(targetDir, Path.GetFileName(source)));
-        _watcher.MarkSelfProduced(source);
-        _watcher.MarkSelfProduced(fullTarget);
         var options = new FileOpOptions
         {
             Conflict = _data.Watch.ConflictPolicy,
             MaxRetries = Math.Clamp(_data.Watch.LockedFileRetries, 0, 10)
         };
+        _watcher.MarkSelfProduced(source);
+        _watcher.MarkSelfProduced(Path.Combine(targetDir, Path.GetFileName(source)));
         var final = await _fileOps.MoveAsync(source, targetDir, options);
         _watcher.MarkSelfProduced(final);
         return final;
@@ -332,11 +331,11 @@ public sealed class SortingOrchestrator : IDisposable
 
     private async Task<string> ApplyRenameTemplateAsync(string path, ItemKind kind, RuleDecision decision, string? source)
     {
-        var template = decision.MatchedRule?.Action.RenameTemplate;
+        var template = decision.MatchedRule?.Action?.RenameTemplate;
         if (!NameTemplate.HasTemplate(template)) return path;
         try
         {
-            var newName = NameTemplate.Render(template!, path, kind);
+            var newName = NameTemplate.Render(template!, path, kind, DateTimeOffset.Now);
             if (string.Equals(newName, Path.GetFileName(path), StringComparison.OrdinalIgnoreCase)) return path;
             _watcher.MarkSelfProduced(path);
             var renamed = await _fileOps.RenameAsync(path, newName);

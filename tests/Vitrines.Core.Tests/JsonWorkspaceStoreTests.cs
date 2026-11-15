@@ -134,4 +134,76 @@ public sealed class JsonWorkspaceStoreTests
         Assert.Single(replaced);
         Assert.Equal("kept", replaced[0].Reason);
     }
+
+    [Fact]
+    public async Task LoadAsync_LegacyRawFiles_AreSupported()
+    {
+        using var dir = new TempDir();
+        dir.WriteFile("layout.json", "[{\"Name\":\"A\",\"Kind\":0,\"Items\":[]}]");
+        dir.WriteFile("rules.json", "[{\"Name\":\"R\",\"Enabled\":true,\"Order\":1,\"Condition\":{},\"Action\":{\"Type\":0}}]");
+        dir.WriteFile("settings.json", "{\"StableSeconds\":10,\"Recursive\":true,\"Appearance\":{\"Theme\":\"light\"}}");
+        dir.WriteFile("inbox.json", "[{\"Path\":\"C:\\\\x.txt\",\"DisplayName\":\"x.txt\",\"Reason\":\"r\"}]");
+        var store = new JsonWorkspaceStore(dir.Path);
+
+        var data = await store.LoadAsync();
+
+        Assert.Single(data.Vitrines);
+        Assert.Equal("A", data.Vitrines[0].Name);
+        Assert.Single(data.Rules);
+        Assert.Equal("R", data.Rules[0].Name);
+        Assert.Equal(10, data.Watch.StableSeconds);
+        Assert.True(data.Watch.Recursive);
+        Assert.Equal("light", data.Watch.Appearance.Theme);
+        Assert.Single(data.Inbox);
+    }
+
+    [Fact]
+    public async Task Save_WritesVersionedEnvelopes()
+    {
+        using var dir = new TempDir();
+        var store = new JsonWorkspaceStore(dir.Path);
+        var data = new WorkspaceData();
+        data.Vitrines.Add(new Vitrine { Name = "V" });
+        data.Rules.Add(new SortingRule { Name = "R" });
+        data.Inbox.Add(new InboxEntry { Path = "p", DisplayName = "p" });
+        data.Watch.StableSeconds = 5;
+
+        await store.SaveLayoutAsync(data);
+        await store.SaveRulesAsync(data);
+        await store.SaveSettingsAsync(data);
+
+        var layout = await File.ReadAllTextAsync(dir.Combine("layout.json"));
+        var rules = await File.ReadAllTextAsync(dir.Combine("rules.json"));
+        var settings = await File.ReadAllTextAsync(dir.Combine("settings.json"));
+        var inbox = await File.ReadAllTextAsync(dir.Combine("inbox.json"));
+
+        Assert.Contains("\"schemaVersion\": 1", layout);
+        Assert.Contains("\"vitrines\"", layout);
+        Assert.Contains("\"schemaVersion\": 1", rules);
+        Assert.Contains("\"rules\"", rules);
+        Assert.Contains("\"schemaVersion\": 1", settings);
+        Assert.Contains("\"watch\"", settings);
+        Assert.Contains("\"schemaVersion\": 1", inbox);
+        Assert.Contains("\"inbox\"", inbox);
+    }
+
+    [Fact]
+    public async Task LoadAsync_CorruptFiles_FallBackSafely()
+    {
+        using var dir = new TempDir();
+        dir.WriteFile("layout.json", "{not-json");
+        dir.WriteFile("rules.json", "[broken");
+        dir.WriteFile("settings.json", "null-bad");
+        dir.WriteFile("inbox.json", "oops");
+        var store = new JsonWorkspaceStore(dir.Path);
+
+        var data = await store.LoadAsync();
+
+        Assert.NotNull(data);
+        Assert.Empty(data.Vitrines);
+        Assert.Empty(data.Rules);
+        Assert.Empty(data.Inbox);
+        Assert.NotNull(data.Watch);
+        Assert.NotNull(data.Watch.Appearance);
+    }
 }

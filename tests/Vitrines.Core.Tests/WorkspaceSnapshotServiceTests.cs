@@ -101,4 +101,42 @@ public sealed class WorkspaceSnapshotServiceTests
 
         Assert.Throws<IOException>(() => service.Rename(first, "two"));
     }
+
+    [Fact]
+    public async Task Export_IncludesManifest()
+    {
+        using var dir = new TempDir();
+        Seed(dir.Path);
+        var service = new WorkspaceSnapshotService(dir.Path);
+        var zip = dir.Combine("export.zip");
+
+        await service.ExportAsync(zip);
+
+        using var archive = ZipFile.OpenRead(zip);
+        var manifest = archive.GetEntry("manifest.json");
+        Assert.NotNull(manifest);
+        using var reader = new StreamReader(manifest!.Open());
+        var text = await reader.ReadToEndAsync();
+        Assert.Contains("\"schemaVersion\"", text);
+        Assert.Contains("\"files\"", text);
+    }
+
+    [Fact]
+    public async Task Import_LegacySnapshotWithoutManifest_RestoresData()
+    {
+        using var dir = new TempDir();
+        Seed(dir.Path);
+        var zip = dir.Combine("legacy.zip");
+        using (var archive = ZipFile.Open(zip, ZipArchiveMode.Create))
+        {
+            var e = archive.CreateEntry("settings.json");
+            using var w = new StreamWriter(e.Open());
+            w.Write("{\"StableSeconds\":7}");
+        }
+
+        var service = new WorkspaceSnapshotService(dir.Path);
+        await service.ImportAsync(zip);
+
+        Assert.Equal("{\"StableSeconds\":7}", File.ReadAllText(Path.Combine(dir.Path, "settings.json")));
+    }
 }

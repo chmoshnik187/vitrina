@@ -71,6 +71,7 @@
                     <Border.ContextMenu>
                         <ContextMenu>
                             <MenuItem Header="Переименовать витрину" Click="RenameVitrine_Click"/>
+                            <MenuItem x:Name="CollapseMenuItem" Header="Свернуть / развернуть" Click="ToggleCollapse_Click"/>
                             <Separator/>
                             <MenuItem Header="Сделать порталом (выбрать папку)…" Click="MakePortal_Click"/>
                             <MenuItem Header="Сделать коллекцией" Click="MakeCollection_Click"/>
@@ -97,7 +98,7 @@
                 </Border>
 
                 <!-- accent line -->
-                <Border Grid.Row="1" Height="1" Margin="12,0,12,0">
+                <Border x:Name="AccentLine" Grid.Row="1" Height="1" Margin="12,0,12,0">
                     <Border.Background>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
                             <GradientStop Color="#007C9CFF" Offset="0"/>
@@ -107,7 +108,7 @@
                     </Border.Background>
                 </Border>
 
-                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="8,6,8,8">
+                <ScrollViewer x:Name="ContentScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="8,6,8,8">
                     <ItemsControl x:Name="ItemsPanel">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>

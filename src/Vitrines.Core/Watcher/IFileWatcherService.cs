@@ -9,6 +9,8 @@ namespace Vitrines.Core.Watcher;
 public interface IFileWatcherService : IDisposable
 {
     event EventHandler<StableFileEventArgs>? FileReady;
+    /// <summary>Ошибки наблюдателя (например, переполнение буфера). Сигнализирует о риске пропуска событий.</summary>
+    event EventHandler<WatcherErrorEventArgs>? Error;
 
     void Configure(WatchSettings settings);
     void Start(IEnumerable<string> sourcePaths);
@@ -22,4 +24,13 @@ public sealed class StableFileEventArgs : EventArgs
 {
     public required string FullPath { get; init; }
     public required WatcherChangeTypes ChangeType { get; init; }
+}
+
+public sealed class WatcherErrorEventArgs : EventArgs
+{
+    public string? SourcePath { get; init; }
+    public Exception? Exception { get; init; }
+    public string Message { get; init; } = string.Empty;
+    /// <summary>Признак переполнения буфера FileSystemWatcher (возможна потеря событий).</summary>
+    public bool BufferOverflow { get; init; }
 }

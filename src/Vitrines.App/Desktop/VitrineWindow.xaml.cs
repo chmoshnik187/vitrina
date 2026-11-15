@@ -27,6 +27,7 @@ public partial class VitrineWindow : Window
     private bool _suppressSave;
     private bool _dragging;
     private bool _refreshing;
+    private double _expandedHeight;
     private Point _dragStart;
 
     public ObservableCollection<VitrineItemView> Items { get; } = new();
@@ -36,6 +37,7 @@ public partial class VitrineWindow : Window
         InitializeComponent();
         _model = model;
         _actions = actions;
+        ShowActivated = false;
         ItemsPanel.ItemsSource = Items;
 
         _saveDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
@@ -85,9 +87,17 @@ public partial class VitrineWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        const int WM_MOUSEACTIVATE = 0x0021;
+        const int MA_NOACTIVATE = 3;
         const int WM_SETTINGCHANGE = 0x001A;
         const int WM_DISPLAYCHANGE = 0x007E;
         const int WM_DPICHANGED = 0x02E0;
+
+        if (msg == WM_MOUSEACTIVATE && CurrentAppearance.NoActivateWindows)
+        {
+            handled = true;
+            return new IntPtr(MA_NOACTIVATE);
+        }
 
         if (msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED || msg == WM_SETTINGCHANGE)
         {
@@ -153,10 +163,42 @@ public partial class VitrineWindow : Window
         _suppressSave = true;
         TitleText.Text = _model.Name;
         Left = _model.X; Top = _model.Y; Width = _model.Width; Height = _model.Height;
+        _expandedHeight = _model.Height;
         ApplyAppearance(false);
         RefreshItems();
+        ApplyCollapseState();
         _suppressSave = false;
         SendToBack();
+    }
+
+    private void ApplyCollapseState()
+    {
+        var collapsed = _model.IsCollapsed;
+        AccentLine.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        ContentScroll.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        EmptyHint.Visibility = collapsed ? Visibility.Collapsed : (Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed);
+        ResizeMode = collapsed ? ResizeMode.NoResize : ResizeMode.CanResizeWithGrip;
+        if (collapsed)
+        {
+            if (_expandedHeight <= 0) _expandedHeight = Math.Max(_model.Height, 240);
+            MinHeight = 0;
+            Height = 56;
+        }
+        else
+        {
+            MinHeight = 140;
+            Height = _expandedHeight > 0 ? _expandedHeight : Math.Max(_model.Height, 240);
+        }
+        if (CollapseMenuItem != null) CollapseMenuItem.Header = collapsed ? "Развернуть" : "Свернуть";
+    }
+
+    private async void ToggleCollapse_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_model.IsCollapsed) _expandedHeight = Height;
+        _model.IsCollapsed = !_model.IsCollapsed;
+        if (!_model.IsCollapsed) _model.Height = _expandedHeight > 0 ? _expandedHeight : _model.Height;
+        ApplyCollapseState();
+        await _actions.SaveLayoutAsync();
     }
 
     private static double ClampOpacity(double op) => Math.Clamp(op <= 0 ? 0.9 : op, 0.35, 1.0);
@@ -278,7 +320,7 @@ public partial class VitrineWindow : Window
                 foreach (var it in EnumeratePortalItems()) Items.Add(VitrineItemView.From(it, _model.Id, true, appearance));
             else
                 foreach (var it in _model.Items) Items.Add(VitrineItemView.From(it, _model.Id, false, appearance));
-            EmptyHint.Visibility = Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            EmptyHint.Visibility = !_model.IsCollapsed && Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             KindBadge.Text = _model.Kind == VitrineKind.Portal ? $"портал · {Items.Count}" : $"витрина · {Items.Count}";
         }
         finally { _refreshing = false; }
@@ -361,7 +403,12 @@ public partial class VitrineWindow : Window
     private void ScheduleSaveBounds()
     {
         if (_suppressSave) return;
-        _model.X = Left; _model.Y = Top; _model.Width = Width; _model.Height = Height;
+        _model.X = Left; _model.Y = Top; _model.Width = Width;
+        if (!_model.IsCollapsed)
+        {
+            _model.Height = Height;
+            _expandedHeight = Height;
+        }
         _saveDebounce.Stop();
         _saveDebounce.Start();
     }
