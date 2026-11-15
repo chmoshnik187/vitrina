@@ -9,16 +9,47 @@
         LocationChanged="Window_LocationChanged" SizeChanged="Window_SizeChanged">
     <Window.Resources>
         <SolidColorBrush x:Key="VAccent" Color="#7C9CFF"/>
+        <Color x:Key="VAccentColor">#7C9CFF</Color>
+        <SolidColorBrush x:Key="VText" Color="#F4F7FF"/>
+        <SolidColorBrush x:Key="VTextDim" Color="#A8B8D8"/>
+        <SolidColorBrush x:Key="VHeaderBg" Color="#14FFFFFF"/>
+        <SolidColorBrush x:Key="VItemBg" Color="#12FFFFFF"/>
+        <SolidColorBrush x:Key="VItemBorder" Color="#18FFFFFF"/>
+        <SolidColorBrush x:Key="VItemHover" Color="#22FFFFFF"/>
+        <SolidColorBrush x:Key="VBadgeBg" Color="#227C9CFF"/>
+        <SolidColorBrush x:Key="VBadgeBorder" Color="#557C9CFF"/>
+        <SolidColorBrush x:Key="VEmpty" Color="#70A8B8D8"/>
+
+        <Style x:Key="ItemTile" TargetType="Border">
+            <Setter Property="Margin" Value="5"/>
+            <Setter Property="Padding" Value="7"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Background" Value="{DynamicResource VItemBg}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource VItemBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource VItemHover}"/>
+                    <Setter Property="BorderBrush" Value="{DynamicResource VAccent}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
+
     <Grid Margin="6">
         <!-- soft outer glow -->
         <Border CornerRadius="16" Background="#20000000" Margin="2,3,2,1"/>
-        <Border x:Name="RootBorder" CornerRadius="16" BorderThickness="1" SnapsToDevicePixels="True">
+        <Border x:Name="RootBorder" CornerRadius="16" BorderThickness="1" SnapsToDevicePixels="True"
+                RenderTransformOrigin="0.5,0.5">
+            <Border.RenderTransform>
+                <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1"/>
+            </Border.RenderTransform>
             <Border.BorderBrush>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                     <GradientStop Color="#66FFFFFF" Offset="0"/>
                     <GradientStop Color="#22FFFFFF" Offset="0.5"/>
-                    <GradientStop Color="#447C9CFF" Offset="1"/>
+                    <GradientStop Color="{DynamicResource VAccentColor}" Offset="1"/>
                 </LinearGradientBrush>
             </Border.BorderBrush>
             <Border.Background>
@@ -35,13 +66,15 @@
                 </Grid.RowDefinitions>
 
                 <!-- Header -->
-                <Border Grid.Row="0" CornerRadius="16,16,0,0" MouseLeftButtonDown="Header_MouseLeftButtonDown" Padding="12,9" Background="#14FFFFFF">
+                <Border Grid.Row="0" CornerRadius="16,16,0,0" MouseLeftButtonDown="Header_MouseLeftButtonDown"
+                        Padding="12,9" Background="{DynamicResource VHeaderBg}">
                     <Border.ContextMenu>
                         <ContextMenu>
                             <MenuItem Header="Переименовать витрину" Click="RenameVitrine_Click"/>
                             <Separator/>
                             <MenuItem Header="Сделать порталом (выбрать папку)…" Click="MakePortal_Click"/>
                             <MenuItem Header="Сделать коллекцией" Click="MakeCollection_Click"/>
+                            <MenuItem Header="Обновить содержимое" Click="RefreshContents_Click"/>
                             <MenuItem Header="Открыть папку (портал/хранилище)" Click="OpenPortalFolder_Click"/>
                             <Separator/>
                             <MenuItem Header="Менее прозрачная" Click="OpacityUp_Click"/>
@@ -51,12 +84,13 @@
                         </ContextMenu>
                     </Border.ContextMenu>
                     <DockPanel>
-                        <Border DockPanel.Dock="Right" CornerRadius="8" Background="#227C9CFF" BorderBrush="#557C9CFF" BorderThickness="1" Padding="8,3" Margin="8,0,0,0">
-                            <TextBlock x:Name="KindBadge" Foreground="#CFE0FF" FontSize="10" VerticalAlignment="Center"/>
+                        <Border DockPanel.Dock="Right" CornerRadius="8" Background="{DynamicResource VBadgeBg}"
+                                BorderBrush="{DynamicResource VBadgeBorder}" BorderThickness="1" Padding="8,3" Margin="8,0,0,0">
+                            <TextBlock x:Name="KindBadge" Foreground="{DynamicResource VTextDim}" FontSize="10" VerticalAlignment="Center"/>
                         </Border>
                         <StackPanel Orientation="Horizontal">
-                            <Border Width="8" Height="8" CornerRadius="4" Background="{StaticResource VAccent}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                            <TextBlock x:Name="TitleText" Foreground="#F4F7FF" FontSize="14" FontWeight="SemiBold"
+                            <Border Width="8" Height="8" CornerRadius="4" Background="{DynamicResource VAccent}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBlock x:Name="TitleText" Foreground="{DynamicResource VText}" FontSize="14" FontWeight="SemiBold"
                                        TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DockPanel>
@@ -67,7 +101,7 @@
                     <Border.Background>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
                             <GradientStop Color="#007C9CFF" Offset="0"/>
-                            <GradientStop Color="#AA7C9CFF" Offset="0.3"/>
+                            <GradientStop Color="{DynamicResource VAccentColor}" Offset="0.5"/>
                             <GradientStop Color="#007C9CFF" Offset="1"/>
                         </LinearGradientBrush>
                     </Border.Background>
@@ -82,9 +116,10 @@
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Border x:Name="tile" Margin="5" Padding="7" Width="{Binding TileWidth}" CornerRadius="12" Background="#12FFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1"
+                                <Border x:Name="tile" Style="{StaticResource ItemTile}" Width="{Binding TileWidth}"
+                                        Loaded="Tile_Loaded"
                                         ToolTip="{Binding Path}" MouseLeftButtonUp="Item_MouseLeftButtonUp"
-                                        MouseMove="Item_MouseMove" Tag="{Binding}" Cursor="Hand">
+                                        MouseMove="Item_MouseMove" Tag="{Binding}">
                                     <Border.ContextMenu>
                                         <ContextMenu Opened="ItemMenu_Opened">
                                             <MenuItem Header="Открыть" Click="ItemOpen_Click"/>
@@ -94,16 +129,6 @@
                                             <MenuItem Header="Убрать из витрины" Click="ItemRemove_Click"/>
                                         </ContextMenu>
                                     </Border.ContextMenu>
-                                    <Border.Style>
-                                        <Style TargetType="Border">
-                                            <Style.Triggers>
-                                                <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter Property="Background" Value="#22FFFFFF"/>
-                                                    <Setter Property="BorderBrush" Value="#557C9CFF"/>
-                                                </Trigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Border.Style>
                                     <StackPanel>
                                         <Border Width="44" Height="44" CornerRadius="10" HorizontalAlignment="Center">
                                             <Border.Background>
@@ -115,7 +140,7 @@
                                             <Grid>
                                                 <Image Source="{Binding Icon}" Width="34" Height="34" Stretch="Uniform"
                                                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                                <TextBlock Text="{Binding KindGlyph}" Foreground="#EAF0FF" FontSize="18"
+                                                <TextBlock Text="{Binding KindGlyph}" Foreground="{DynamicResource VText}" FontSize="18"
                                                            HorizontalAlignment="Center" VerticalAlignment="Center">
                                                     <TextBlock.Style>
                                                         <Style TargetType="TextBlock">
@@ -130,7 +155,7 @@
                                                 </TextBlock>
                                             </Grid>
                                         </Border>
-                                        <TextBlock Text="{Binding DisplayName}" Foreground="#F2F6FF" FontSize="{Binding NameFontSize}"
+                                        <TextBlock Text="{Binding DisplayName}" Foreground="{DynamicResource VText}" FontSize="{Binding NameFontSize}"
                                                    TextWrapping="Wrap" TextAlignment="Center" MaxHeight="36" Margin="0,5,0,0"
                                                    TextTrimming="CharacterEllipsis"/>
                                         <TextBlock Text="{Binding PinMark}" Foreground="#F7D774" FontSize="10" TextAlignment="Center"/>
@@ -142,8 +167,12 @@
                 </ScrollViewer>
 
                 <TextBlock x:Name="EmptyHint" Grid.Row="2" Text="Пусто — перетащите сюда файлы&#x0a;или дождитесь авто-сортировки"
-                           Foreground="#70A8B8D8" TextWrapping="Wrap" TextAlignment="Center"
+                           Foreground="{DynamicResource VEmpty}" TextWrapping="Wrap" TextAlignment="Center"
                            VerticalAlignment="Center" Margin="18" Visibility="Collapsed"/>
+
+                <!-- мягкая вспышка при авто-размещении элемента -->
+                <Border x:Name="PulseBorder" Grid.RowSpan="3" CornerRadius="15" BorderThickness="2"
+                        BorderBrush="{DynamicResource VAccent}" Opacity="0" IsHitTestVisible="False"/>
             </Grid>
         </Border>
     </Grid>

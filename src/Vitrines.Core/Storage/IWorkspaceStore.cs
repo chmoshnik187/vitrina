@@ -1,3 +1,4 @@
+using Vitrines.Core.Actions;
 using Vitrines.Core.Models;
 
 namespace Vitrines.Core.Storage;
@@ -40,8 +41,31 @@ public sealed class WatchSettings
     public UnmatchedPolicy Unmatched { get; set; } = UnmatchedPolicy.Ignore;
     public string UnmatchedVitrineName { get; set; } = "Неразобранное";
 
+    // Хранение коллекций и конфликты имён
+    /// <summary>Перемещать элементы коллекций в управляемое хранилище или оставлять на месте (ссылка).</summary>
+    public CollectionPlacement CollectionPlacement { get; set; } = CollectionPlacement.Move;
+    public NameConflictPolicy ConflictPolicy { get; set; } = NameConflictPolicy.Rename;
+    /// <summary>Повторы при временной блокировке файла (антивирус/индексатор).</summary>
+    public int LockedFileRetries { get; set; } = 4;
+
+    // Расписание (необязательно; по умолчанию выключено)
+    public bool ScheduleEnabled { get; set; } = false;
+    /// <summary>Интервал фонового разбора существующих элементов, минуты.</summary>
+    public int ScheduleMinutes { get; set; } = 30;
+
+    /// <summary>Расширенный локальный аудит: писать в журнал и пропуски/решения без действий.</summary>
+    public bool LocalAudit { get; set; } = false;
+
     // Внешний вид/поведение (глобально)
     public AppearanceSettings Appearance { get; set; } = new();
+}
+
+public enum CollectionPlacement
+{
+    /// <summary>Физически перемещать элемент в папку хранилища витрины (по умолчанию).</summary>
+    Move,
+    /// <summary>Оставлять файл на месте и хранить ссылку в витрине.</summary>
+    Reference
 }
 
 public enum UnmatchedPolicy
@@ -62,4 +86,10 @@ public sealed class AppearanceSettings
     public double FontScale { get; set; } = 1.0;
     public bool Animations { get; set; } = true;
     public bool ShowBadges { get; set; } = true;
+    /// <summary>Использовать системный Acrylic/Blur за окном витрины, если доступен.</summary>
+    public bool UseAcrylic { get; set; } = true;
+    /// <summary>Удерживать окна витрин на слое рабочего стола (внизу z-order).</summary>
+    public bool PinToDesktopLayer { get; set; } = true;
+    /// <summary>Не активировать окна витрин при клике (чтобы не перекрывать другие окна).</summary>
+    public bool NoActivateWindows { get; set; } = true;
 }

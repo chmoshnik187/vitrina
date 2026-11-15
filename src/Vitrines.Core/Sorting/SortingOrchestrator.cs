@@ -181,6 +181,7 @@ public sealed class SortingOrchestrator : IDisposable
         try
         {
             if (IsPinned(path)) { await LogAsync(HistoryEvent.Skipped, path, null, null, null, null, "Элемент закреплён вручную"); return; }
+            if (IsAlreadyPlaced(path)) { await LogAsync(HistoryEvent.Skipped, path, null, null, null, null, "Элемент уже присутствует в витрине (ссылка)"); return; }
             var facts = FileFacts.FromPath(path);
             var decision = _rules.Evaluate(path, facts.Kind, _data.Rules, facts, _data.Watch);
             await ApplyAsync(path, facts.Kind, decision);
@@ -212,9 +213,18 @@ public sealed class SortingOrchestrator : IDisposable
                 var targetDir = decision.MatchedRule?.Action.TargetFolderPath;
                 if (string.IsNullOrWhiteSpace(targetDir))
                 { await LogAsync(HistoryEvent.Skipped, path, null, null, decision.MatchedRule?.Id, decision.MatchedRule?.Name, "Не задана целевая папка", source: source); return false; }
-                var final = await MoveTrackedAsync(path, targetDir);
-                await LogAsync(HistoryEvent.Moved, path, path, final, decision.MatchedRule?.Id, decision.MatchedRule?.Name, decision.Reason, undoData: path, source: source);
-                return true;
+                try
+                {
+                    var final = await MoveTrackedAsync(path, targetDir);
+                    final = await ApplyRenameTemplateAsync(final, kind, decision, source);
+                    await LogAsync(HistoryEvent.Moved, final, path, final, decision.MatchedRule?.Id, decision.MatchedRule?.Name, decision.Reason, undoData: path, source: source);
+                    return true;
+                }
+                catch (FileConflictException ex)
+                {
+                    await LogAsync(HistoryEvent.Skipped, path, null, null, decision.MatchedRule?.Id, decision.MatchedRule?.Name, $"Пропущено: {ex.Message}", source: source);
+                    return false;
+                }
             }
 
             case RuleActionType.PlaceInVitrine:
@@ -230,19 +240,34 @@ public sealed class SortingOrchestrator : IDisposable
 
                 string effectivePath = path;
                 string? undo = null;
-                if (vitrine.Kind == VitrineKind.Portal && !string.IsNullOrWhiteSpace(vitrine.FolderPath))
+                try
                 {
-                    effectivePath = await MoveTrackedAsync(path, vitrine.FolderPath);
-                    undo = path;
-                }
-                else if (vitrine.Kind == VitrineKind.Collection)
-                {
-                    var storage = VitrineStorage.GetManagedFolder(vitrine);
-                    if (!VitrineStorage.IsInDirectory(path, storage))
+                    if (vitrine.Kind == VitrineKind.Portal && !string.IsNullOrWhiteSpace(vitrine.FolderPath))
                     {
-                        effectivePath = await MoveTrackedAsync(path, storage);
+                        effectivePath = await MoveTrackedAsync(path, vitrine.FolderPath);
                         undo = path;
                     }
+                    else if (vitrine.Kind == VitrineKind.Collection && _data.Watch.CollectionPlacement == CollectionPlacement.Move)
+                    {
+                        var storage = VitrineStorage.GetManagedFolder(vitrine);
+                        if (!VitrineStorage.IsInDirectory(path, storage))
+                        {
+                            effectivePath = await MoveTrackedAsync(path, storage);
+                            undo = path;
+                        }
+                    }
+
+                    var renamed = await ApplyRenameTemplateAsync(effectivePath, kind, decision, source);
+                    if (!string.Equals(renamed, effectivePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        undo ??= path;
+                        effectivePath = renamed;
+                    }
+                }
+                catch (FileConflictException ex)
+                {
+                    await LogAsync(HistoryEvent.Skipped, path, null, null, decision.MatchedRule?.Id, decision.MatchedRule?.Name, $"Пропущено: {ex.Message}", source: source);
+                    return false;
                 }
 
                 var item = new VitrineItem
@@ -256,7 +281,10 @@ public sealed class SortingOrchestrator : IDisposable
                     vitrine.Items.Add(item);
 
                 await _store.SaveLayoutAsync(_data);
-                await LogAsync(HistoryEvent.Placed, effectivePath, path, vitrine.Name, decision.MatchedRule?.Id, decision.MatchedRule?.Name, decision.Reason, undoData: undo, source: source);
+                var reason = _data.Watch.CollectionPlacement == CollectionPlacement.Reference && undo == null
+                    ? decision.Reason + " (ссылка, файл оставлен на месте)"
+                    : decision.Reason;
+                await LogAsync(HistoryEvent.Placed, effectivePath, path, vitrine.Name, decision.MatchedRule?.Id, decision.MatchedRule?.Name, reason, undoData: undo, source: source);
                 return true;
             }
         }
@@ -292,9 +320,35 @@ public sealed class SortingOrchestrator : IDisposable
         var fullTarget = Path.GetFullPath(Path.Combine(targetDir, Path.GetFileName(source)));
         _watcher.MarkSelfProduced(source);
         _watcher.MarkSelfProduced(fullTarget);
-        var final = await _fileOps.MoveAsync(source, targetDir);
+        var options = new FileOpOptions
+        {
+            Conflict = _data.Watch.ConflictPolicy,
+            MaxRetries = Math.Clamp(_data.Watch.LockedFileRetries, 0, 10)
+        };
+        var final = await _fileOps.MoveAsync(source, targetDir, options);
         _watcher.MarkSelfProduced(final);
         return final;
+    }
+
+    private async Task<string> ApplyRenameTemplateAsync(string path, ItemKind kind, RuleDecision decision, string? source)
+    {
+        var template = decision.MatchedRule?.Action.RenameTemplate;
+        if (!NameTemplate.HasTemplate(template)) return path;
+        try
+        {
+            var newName = NameTemplate.Render(template!, path, kind);
+            if (string.Equals(newName, Path.GetFileName(path), StringComparison.OrdinalIgnoreCase)) return path;
+            _watcher.MarkSelfProduced(path);
+            var renamed = await _fileOps.RenameAsync(path, newName);
+            _watcher.MarkSelfProduced(renamed);
+            return renamed;
+        }
+        catch (Exception ex)
+        {
+            await LogAsync(HistoryEvent.Error, path, null, null, decision.MatchedRule?.Id, decision.MatchedRule?.Name,
+                $"Не удалось переименовать по шаблону: {ex.Message}", source: source);
+            return path;
+        }
     }
 
     private bool IsPinned(string path)
@@ -338,7 +392,14 @@ public sealed class SortingOrchestrator : IDisposable
                           ?? new Vitrine { Name = vitrineName, Kind = VitrineKind.Collection };
                 if (!_data.Vitrines.Contains(vit)) _data.Vitrines.Add(vit);
                 var storage = VitrineStorage.GetManagedFolder(vit);
-                var final = await MoveTrackedAsync(item.Path, storage);
+                var options = new FileOpOptions
+                {
+                    Conflict = _data.Watch.ConflictPolicy,
+                    MaxRetries = Math.Clamp(_data.Watch.LockedFileRetries, 0, 10)
+                };
+                _watcher.MarkSelfProduced(item.Path);
+                var final = await _fileOps.MoveAsync(item.Path, storage, options);
+                _watcher.MarkSelfProduced(final);
                 var vi = new VitrineItem { Path = final, DisplayName = Path.GetFileName(final), Kind = FileFacts.DetectKind(final) };
                 if (!vit.Items.Any(i => string.Equals(i.Path, final, StringComparison.OrdinalIgnoreCase))) vit.Items.Add(vi);
                 item.Status = InboxStatus.Resolved;
@@ -367,6 +428,8 @@ public sealed class SortingOrchestrator : IDisposable
 
     private async Task LogAsync(HistoryEvent ev, string itemPath, string? from, string? to, Guid? ruleId, string? ruleName, string reason, string? undoData = null, string? source = null)
     {
+        // Пропуски пишем только в режиме расширенного локального аудита, чтобы журнал не разрастался.
+        if (ev == HistoryEvent.Skipped && !_data.Watch.LocalAudit) return;
         var entry = new HistoryEntry
         {
             Event = ev, ItemPath = itemPath, From = from, To = to,

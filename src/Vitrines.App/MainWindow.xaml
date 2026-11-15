@@ -37,7 +37,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#243044"/><Setter TargetName="bd" Property="BorderBrush" Value="#3A4760"/></Trigger>
-                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="#2A3852"/><Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="#2A3852"/><Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger>
                             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -77,7 +77,7 @@
                     <ControlTemplate TargetType="ListBoxItem">
                         <Border x:Name="bd" CornerRadius="8" Background="Transparent" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsSelected" Value="True"><Setter TargetName="bd" Property="Background" Value="{StaticResource AccentSoftBrush}"/><Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/><Setter TargetName="bd" Property="BorderThickness" Value="1"/></Trigger>
+                            <Trigger Property="IsSelected" Value="True"><Setter TargetName="bd" Property="Background" Value="{DynamicResource AccentSoftBrush}"/><Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/><Setter TargetName="bd" Property="BorderThickness" Value="1"/></Trigger>
                             <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#1B2433"/></Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -106,8 +106,8 @@
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Border Width="36" Height="36" CornerRadius="10" Background="{StaticResource AccentSoftBrush}" BorderBrush="{StaticResource AccentBrush}" BorderThickness="1" Margin="0,0,12,0">
-                    <TextBlock Text="▣" FontSize="18" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <Border Width="36" Height="36" CornerRadius="10" Background="{DynamicResource AccentSoftBrush}" BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1" Margin="0,0,12,0">
+                    <TextBlock Text="▣" FontSize="18" Foreground="{DynamicResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <StackPanel>
                     <TextBlock Text="Витрины" FontSize="22" FontWeight="SemiBold"/>
@@ -136,7 +136,7 @@
                     <Button Content="＋ Новый портал…" Margin="0,0,8,8" Click="NewPortal_Click"/>
                     <Button Content="Показать витрины" Margin="0,0,8,8" Click="ShowVitrines_Click"/>
                     <Button Content="Скрыть витрины" Margin="0,0,8,8" Click="HideVitrines_Click"/>
-                    <Button Content="▶ Разобрать сейчас" Margin="0,0,8,8" Click="Scan_Click" Background="{StaticResource AccentSoftBrush}" BorderBrush="{StaticResource AccentBrush}"/>
+                    <Button Content="▶ Разобрать сейчас" Margin="0,0,8,8" Click="Scan_Click" Background="{DynamicResource AccentSoftBrush}" BorderBrush="{DynamicResource AccentBrush}"/>
                     <Button Content="↶ Откатить 1" Margin="0,0,8,8" Click="Undo_Click"/>
                     <Button Content="↶ Откатить 5" Margin="0,0,8,8" Click="Undo5_Click"/>
                     <Button Content="Обновить" Margin="0,0,8,8" Click="Refresh_Click"/>
@@ -175,7 +175,7 @@
                     <Grid Margin="6">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <WrapPanel Margin="0,0,0,10" ItemHeight="34">
-                            <Button Content="＋ Быстрое правило" Margin="0,0,8,8" Click="AddRule_Click" Background="{StaticResource AccentSoftBrush}" BorderBrush="{StaticResource AccentBrush}"/>
+                            <Button Content="＋ Быстрое правило" Margin="0,0,8,8" Click="AddRule_Click" Background="{DynamicResource AccentSoftBrush}" BorderBrush="{DynamicResource AccentBrush}"/>
                             <Button Content="＋ Расширенное…" Margin="0,0,8,8" Click="AddAdvancedRule_Click"/>
                             <Button Content="Изменить…" Margin="0,0,8,8" Click="EditRule_Click"/>
                             <Button Content="Вкл/выкл" Margin="0,0,8,8" Click="ToggleRule_Click"/>
@@ -186,10 +186,14 @@
                             <Button Content="Пресеты" Margin="0,0,8,8" Click="Presets_Click"/>
                             <Button Content="Сохранить" Margin="0,0,8,8" Click="SaveRules_Click"/>
                         </WrapPanel>
-                        <ListBox x:Name="RulesList" Grid.Row="1" FontFamily="Cascadia Mono, Consolas" FontSize="12"/>
+                        <ListBox x:Name="RulesList" Grid.Row="1" FontFamily="Cascadia Mono, Consolas" FontSize="12"
+                                 AllowDrop="True"
+                                 PreviewMouseLeftButtonDown="RulesList_PreviewMouseLeftButtonDown"
+                                 PreviewMouseMove="RulesList_PreviewMouseMove"
+                                 DragOver="RulesList_DragOver" Drop="RulesList_Drop"/>
                         <Border Grid.Row="2" Margin="0,10,0,0" Background="#121722" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="10" Padding="10">
                             <TextBlock Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"
-                                       Text="Правила идут сверху вниз (первое совпадение). Поддерживаются расширения, маски, тип, размер/даты (через расширенный редактор), источник, исключения и правило-исключение «не трогать». Политика для неподошедших — во вкладке «Вид и настройки»."/>
+                                       Text="Правила идут сверху вниз (первое совпадение). Перетаскивайте строки мышью для изменения порядка или используйте ↑/↓. Поддерживаются расширения, маски, тип, размер/даты, источник, исключения, правило-исключение «не трогать» и переименование по шаблону. Политика для неподошедших — во вкладке «Вид и настройки»."/>
                         </Border>
                     </Grid>
                 </TabItem>
@@ -198,7 +202,8 @@
                     <Grid Margin="6">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <WrapPanel Margin="0,0,0,10" ItemHeight="34">
-                            <Button Content="В витрину…" Margin="0,0,8,8" Click="InboxMove_Click" Background="{StaticResource AccentSoftBrush}" BorderBrush="{StaticResource AccentBrush}"/>
+                            <Button Content="В витрину…" Margin="0,0,8,8" Click="InboxMove_Click" Background="{DynamicResource AccentSoftBrush}" BorderBrush="{DynamicResource AccentBrush}"/>
+                            <Button Content="Правило из выбранного…" Margin="0,0,8,8" Click="InboxCreateRule_Click"/>
                             <Button Content="Показать в папке" Margin="0,0,8,8" Click="InboxReveal_Click"/>
                             <Button Content="Скрыть из списка" Margin="0,0,8,8" Click="InboxDismiss_Click"/>
                             <Button Content="Очистить решённые" Margin="0,0,8,8" Click="InboxClear_Click"/>
@@ -268,6 +273,27 @@
                                 </StackPanel>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="Витрина по умолчанию:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/><TextBox x:Name="UnmatchedVitrineBox" Width="160"/></StackPanel>
                             </WrapPanel>
+                            <WrapPanel ItemHeight="36">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="Коллекции:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/>
+                                    <ComboBox x:Name="CollectionPlacementBox" Width="280">
+                                        <ComboBoxItem Content="Перемещать в хранилище витрины" Tag="Move"/>
+                                        <ComboBoxItem Content="Оставлять на месте (ссылка)" Tag="Reference"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="Конфликт имён:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/>
+                                    <ComboBox x:Name="ConflictPolicyBox" Width="250">
+                                        <ComboBoxItem Content="Безопасно переименовать" Tag="Rename"/>
+                                        <ComboBoxItem Content="Пропустить" Tag="Skip"/>
+                                        <ComboBoxItem Content="Заменить (осторожно)" Tag="Replace"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="Повторы при блокировке:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/><TextBox x:Name="RetriesBox" Width="50"/></StackPanel>
+                            </WrapPanel>
+                            <WrapPanel ItemHeight="36">
+                                <CheckBox x:Name="ScheduleEnabledBox" Content="Периодический разбор существующих файлов" Margin="0,0,16,8" VerticalAlignment="Center"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="каждые, мин:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/><TextBox x:Name="ScheduleMinutesBox" Width="60"/></StackPanel>
+                                <CheckBox x:Name="LocalAuditBox" Content="Расширенный локальный аудит (писать и пропуски)" Margin="0,0,16,8" VerticalAlignment="Center"/>
+                            </WrapPanel>
                             <TextBlock Text="Глобальные исключения (не трогать)" FontWeight="SemiBold" FontSize="14" Margin="0,12,0,8"/>
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -278,6 +304,13 @@
 
                             <TextBlock Text="Внешний вид (кастомизация)" FontWeight="SemiBold" FontSize="14" Margin="0,16,0,8"/>
                             <WrapPanel ItemHeight="36">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="Тема:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/>
+                                    <ComboBox x:Name="ThemeBox" Width="130">
+                                        <ComboBoxItem Content="dark"/>
+                                        <ComboBoxItem Content="light"/>
+                                        <ComboBoxItem Content="glass"/>
+                                    </ComboBox>
+                                </StackPanel>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="Акцент (#RRGGBB):" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/><TextBox x:Name="AccentBox" Width="110"/></StackPanel>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="Размер плитки:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/><TextBox x:Name="TileSizeBox" Width="70"/></StackPanel>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,16,8"><TextBlock Text="Плотность:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/>
@@ -287,17 +320,31 @@
                             </WrapPanel>
                             <WrapPanel ItemHeight="32">
                                 <CheckBox x:Name="AnimationsBox" Content="Анимации" Margin="0,0,16,8"/>
+                                <CheckBox x:Name="UseAcrylicBox" Content="Acrylic/Blur за окном витрины" Margin="0,0,16,8"/>
+                                <CheckBox x:Name="PinToDesktopLayerBox" Content="Удерживать на слое рабочего стола" Margin="0,0,16,8"/>
+                                <CheckBox x:Name="NoActivateWindowsBox" Content="Не активировать окна витрин" Margin="0,0,16,8"/>
                             </WrapPanel>
 
+                            <TextBlock Text="Профили рабочего пространства" FontWeight="SemiBold" FontSize="14" Margin="0,16,0,8"/>
+                            <WrapPanel ItemHeight="34">
+                                <ComboBox x:Name="ProfilesBox" Width="280" Margin="0,0,8,8"/>
+                                <Button Content="Сохранить профиль…" Click="SaveProfile_Click" Margin="0,0,8,8"/>
+                                <Button Content="Восстановить" Click="RestoreProfile_Click" Margin="0,0,8,8"/>
+                                <Button Content="Переименовать…" Click="RenameProfile_Click" Margin="0,0,8,8"/>
+                                <Button Content="Удалить" Click="DeleteProfile_Click" Margin="0,0,8,8"/>
+                                <Button Content="Обновить список" Click="RefreshProfiles_Click" Margin="0,0,8,8"/>
+                            </WrapPanel>
+                            <TextBlock x:Name="ProfilesInfo" Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+
                             <WrapPanel Margin="0,14,0,0" ItemHeight="34">
-                                <Button Content="Сохранить настройки" Click="SaveSettings_Click" Background="{StaticResource AccentSoftBrush}" BorderBrush="{StaticResource AccentBrush}" Margin="0,0,8,8"/>
+                                <Button Content="Сохранить настройки" Click="SaveSettings_Click" Background="{DynamicResource AccentSoftBrush}" BorderBrush="{DynamicResource AccentBrush}" Margin="0,0,8,8"/>
                                 <Button Content="Применить вид к витринам" Click="ApplyAppearance_Click" Margin="0,0,8,8"/>
                                 <Button Content="Пересоздать витрины по правилам" Click="RebuildFromRules_Click" Margin="0,0,8,8"/>
                             </WrapPanel>
 
                             <Border Margin="0,10,0,0" Background="#121722" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="10" Padding="10">
                                 <TextBlock Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"
-                                           Text="Экспорт/импорт (снапшоты) — кнопки в шапке. Хранение: %LOCALAPPDATA%\Vitrines (settings, rules, layout, inbox, history, storage). Витрины позиционируются в пределах экранов; при перезапуске оболочки они перепривязываются к слою рабочего стола."/>
+                                           Text="Экспорт/импорт (снапшоты) — кнопки в шапке; именованные профили — выше. Хранение: %LOCALAPPDATA%\Vitrines (settings, rules, layout, inbox, history, storage, snapshots). Витрины удерживаются на слое рабочего стола, позиции восстанавливаются в рабочей области ближайшего монитора при смене разрешения/DPI."/>
                             </Border>
                         </StackPanel>
                     </ScrollViewer>
@@ -306,6 +353,6 @@
         </Border>
 
         <TextBlock Grid.Row="3" Margin="4,10,4,0" Foreground="{StaticResource TextMutedBrush}" FontSize="12" TextWrapping="Wrap"
-                   Text="Автоматика выключена по умолчанию. Каждое перемещение записывается в журнал и может быть отменено (в т.ч. несколькими шагами). Коллекции физически хранят файлы в %LOCALAPPDATA%\Vitrines\storage, порталы работают с реальными папками."/>
+                   Text="Автоматика выключена по умолчанию. Каждое перемещение записывается в журнал и может быть отменено (в т.ч. несколькими шагами). Коллекции физически хранят файлы в %LOCALAPPDATA%\Vitrines\storage (или работают как ссылки — по настройке), порталы работают с реальными папками."/>
     </Grid>
 </Window>

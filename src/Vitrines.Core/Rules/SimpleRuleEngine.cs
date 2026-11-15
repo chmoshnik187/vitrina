@@ -36,8 +36,7 @@ public sealed class SimpleRuleEngine : IRuleEngine
                     Reason = $"Совпало правило «{rule.Name}»: {why}",
                     TargetVitrineId = rule.Action.TargetVitrineId,
                     TargetVitrineName = rule.Action.CreateVitrineName
-                };
-            }
+                };            }
         }
 
         // нет совпадений — применяем политику по умолчанию

@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -11,6 +10,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Vitrines.Core.Models;
+using Vitrines.Core.Rules;
 using Vitrines.Core.Storage;
 
 namespace Vitrines.App.Desktop;
@@ -22,10 +22,12 @@ public partial class VitrineWindow : Window
     private readonly Vitrine _model;
     private readonly IDesktopActions _actions;
     private readonly DispatcherTimer _saveDebounce;
+    private readonly DispatcherTimer _layerTimer;
+    private readonly DispatcherTimer _portalTimer;
     private bool _suppressSave;
-    private bool _forceClose;
+    private bool _dragging;
+    private bool _refreshing;
     private Point _dragStart;
-    private IntPtr _workerw;
 
     public ObservableCollection<VitrineItemView> Items { get; } = new();
 
@@ -39,132 +41,110 @@ public partial class VitrineWindow : Window
         _saveDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
         _saveDebounce.Tick += async (_, _) => { _saveDebounce.Stop(); await _actions.SaveLayoutAsync(); };
 
+        // Периодически возвращаем окна на слой рабочего стола (после смены фокуса/перезапуска shell).
+        _layerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        _layerTimer.Tick += (_, _) =>
+        {
+            if (!IsVisible || IsActive || _dragging) return;
+            PinToDesktopLayer();
+        };
+
+        // Портал — живое отражение реальной папки: обновляем его без перезапуска приложения.
+        _portalTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        _portalTimer.Tick += (_, _) =>
+        {
+            if (!IsVisible || _dragging || _refreshing || _model.Kind != VitrineKind.Portal) return;
+            RefreshItems();
+        };
+
         Loaded += OnLoaded;
+        Unloaded += (_, _) => { _layerTimer.Stop(); _portalTimer.Stop(); };
         Deactivated += (_, _) => SendToBack();
-        Closing += OnClosing;
-        SourceInitialized += (_, _) => AttachToDesktopLayer();
+        SourceInitialized += (_, _) => ApplyDesktopLayer(clamp: false);
 
         ApplyModel();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        AttachToDesktopLayer();
-        SendToBack();
+        ApplyDesktopLayer(clamp: true);
         ApplyAppearance(true);
+        if (_model.Kind == VitrineKind.Portal) _portalTimer.Start();
+        _layerTimer.Start();
     }
 
-    private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
-    {
-        if (_forceClose) return;
-        // по умолчанию скрываем, а не уничтожаем насовсем? Manager управляет жизненным циклом.
-    }
-
-    public void ForceClose() { _forceClose = true; try { Close(); } catch { } }
+    public void ForceClose() { try { Close(); } catch { } }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
         var source = (HwndSource?)PresentationSource.FromVisual(this);
         source?.AddHook(WndProc);
-        AttachToDesktopLayer();
+        ApplyDesktopLayer(clamp: false);
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        const int WM_WINDOWPOSCHANGING = 0x0046;
+        const int WM_SETTINGCHANGE = 0x001A;
         const int WM_DISPLAYCHANGE = 0x007E;
-        if (msg == WM_WINDOWPOSCHANGING) { /* allow */ }
-        if (msg == WM_DISPLAYCHANGE) Dispatcher.InvokeAsync(() => { AttachToDesktopLayer(); SendToBack(); });
-        // TaskbarCreated (shell restart) - reattach
-        if (msg == _taskbarCreated && _taskbarCreated != 0) Dispatcher.InvokeAsync(() => { AttachToDesktopLayer(); SendToBack(); });
+        const int WM_DPICHANGED = 0x02E0;
+
+        if (msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED || msg == WM_SETTINGCHANGE)
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                ApplyDesktopLayer(clamp: true);
+                RefreshItems();
+            }, DispatcherPriority.Background);
+        }
+        else if (DesktopLayerInterop.TaskbarCreatedMessage != 0 && (uint)msg == DesktopLayerInterop.TaskbarCreatedMessage)
+        {
+            // Explorer перезапустился: перепривязываемся к слою рабочего стола.
+            Dispatcher.InvokeAsync(() => ApplyDesktopLayer(clamp: true), DispatcherPriority.Background);
+        }
         return IntPtr.Zero;
     }
 
-    private static readonly uint _taskbarCreated = RegisterWindowMessage("TaskbarCreated");
+    private AppearanceSettings CurrentAppearance =>
+        _actions.Data.Watch.Appearance ?? new AppearanceSettings();
 
-    private void AttachToDesktopLayer()
+    private void ApplyDesktopLayer(bool clamp)
     {
-        try
-        {
-            var hwnd = new WindowInteropHelper(this).Handle;
-            if (hwnd == IntPtr.Zero) return;
-            _workerw = GetDesktopWorkerW();
-            if (_workerw != IntPtr.Zero)
-            {
-                // делаем дочерним WorkerW, чтобы быть на слое рабочего стола и переживать некоторые сценарии
-                SetParent(hwnd, _workerw);
-            }
-            SendToBack();
-            TryEnableBlur(hwnd);
-        }
-        catch { SendToBack(); }
+        if (!IsLoaded && PresentationSource.FromVisual(this) == null) return;
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+
+        var appearance = CurrentAppearance;
+        DesktopLayerInterop.ConfigureWindow(hwnd, appearance.NoActivateWindows);
+        PinToDesktopLayer();
+        if (clamp) DesktopLayerInterop.EnsureVisibleOnMonitor(hwnd);
+    }
+
+    private void PinToDesktopLayer()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        DesktopLayerInterop.PinToBottom(hwnd, CurrentAppearance.PinToDesktopLayer);
+        ApplyBackdrop(hwnd);
     }
 
     private void SendToBack()
     {
         if (!IsLoaded) return;
-        var hwnd = new WindowInteropHelper(this).Handle;
-        if (hwnd == IntPtr.Zero) return;
-        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        TryEnableBlur(hwnd);
+        PinToDesktopLayer();
     }
 
-    private static IntPtr GetDesktopWorkerW()
+    private void ApplyBackdrop(IntPtr hwnd)
     {
-        var progman = FindWindow("Progman", null);
-        SendMessageTimeout(progman, 0x052C, new IntPtr(0xD), new IntPtr(0x1), SendMessageTimeoutFlags.SMTO_NORMAL, 1000, out _);
-        IntPtr workerw = IntPtr.Zero;
-        EnumWindows((top, lparam) =>
-        {
-            var shell = FindWindowEx(top, IntPtr.Zero, "SHELLDLL_DefView", null);
-            if (shell != IntPtr.Zero)
-            {
-                workerw = FindWindowEx(IntPtr.Zero, top, "WorkerW", null);
-            }
-            return true;
-        }, IntPtr.Zero);
-        return workerw;
+        var a = CurrentAppearance;
+        if (!a.UseAcrylic) { DesktopLayerInterop.DisableBackdrop(hwnd); return; }
+
+        var palette = ResolvePalette(a);
+        var alpha = (byte)Math.Clamp((int)(190 * ClampOpacity(_model.Style?.Opacity ?? 0.9)), 40, 230);
+        var tint = palette.PanelBottom;
+        var abgr = ((uint)alpha << 24) | ((uint)tint.B << 16) | ((uint)tint.G << 8) | tint.R;
+        DesktopLayerInterop.ApplyBackdrop(hwnd, true, abgr);
     }
-
-    private void TryEnableBlur(IntPtr hwnd)
-    {
-        try
-        {
-            var accent = new AccentPolicy { AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND };
-            var size = Marshal.SizeOf(accent);
-            var pAccent = Marshal.AllocHGlobal(size);
-            try
-            {
-                Marshal.StructureToPtr(accent, pAccent, false);
-                var data = new WindowCompositionAttributeData { Attribute = WindowCompositionAttribute.WCA_ACCENT_POLICY, SizeOfData = size, Data = pAccent };
-                SetWindowCompositionAttribute(hwnd, ref data);
-            }
-            finally { Marshal.FreeHGlobal(pAccent); }
-        }
-        catch { }
-    }
-
-    private static readonly IntPtr HWND_BOTTOM = new(1);
-    private const uint SWP_NOMOVE = 0x0002;
-    private const uint SWP_NOSIZE = 0x0001;
-    private const uint SWP_NOACTIVATE = 0x0010;
-
-    [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
-    [DllImport("user32.dll")] private static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
-    [DllImport("user32.dll")] private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowTitle);
-    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, SendMessageTimeoutFlags flags, uint timeout, out IntPtr result);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessage(string lpString);
-    [Flags] private enum SendMessageTimeoutFlags : uint { SMTO_NORMAL = 0x0 }
-
-    private enum AccentState { ACCENT_DISABLED = 0, ACCENT_ENABLE_BLURBEHIND = 3 }
-    private enum WindowCompositionAttribute { WCA_ACCENT_POLICY = 19 }
-    [StructLayout(LayoutKind.Sequential)] private struct AccentPolicy { public AccentState AccentState; public int AccentFlags; public int GradientColor; public int AnimationId; }
-    [StructLayout(LayoutKind.Sequential)] private struct WindowCompositionAttributeData { public WindowCompositionAttribute Attribute; public IntPtr Data; public int SizeOfData; }
-    [DllImport("user32.dll")] private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
 
     public Guid VitrineId => _model.Id;
 
@@ -173,48 +153,135 @@ public partial class VitrineWindow : Window
         _suppressSave = true;
         TitleText.Text = _model.Name;
         Left = _model.X; Top = _model.Y; Width = _model.Width; Height = _model.Height;
-        var op = _model.Style?.Opacity ?? 0.9;
-        if (op < 0.35) op = 0.35; if (op > 1.0) op = 1.0;
-        RootBorder.Opacity = op;
         ApplyAppearance(false);
         RefreshItems();
         _suppressSave = false;
         SendToBack();
     }
 
+    private static double ClampOpacity(double op) => Math.Clamp(op <= 0 ? 0.9 : op, 0.35, 1.0);
+
     private void ApplyAppearance(bool animate)
     {
-        var a = _actions.Data.Watch.Appearance ?? new AppearanceSettings();
-        // акцент
-        try
+        var a = CurrentAppearance;
+        var palette = ResolvePalette(a);
+        var accent = ParseColor(a.Accent, Color.FromRgb(0x7C, 0x9C, 0xFF));
+
+        SetBrush("VAccent", accent);
+        Resources["VAccentColor"] = accent;
+        SetBrush("VText", palette.Text);
+        SetBrush("VTextDim", palette.TextDim);
+        SetBrush("VHeaderBg", palette.Header);
+        SetBrush("VItemBg", palette.ItemBg);
+        SetBrush("VItemBorder", palette.ItemBorder);
+        SetBrush("VItemHover", palette.ItemHover);
+        SetBrush("VBadgeBg", WithAlpha(accent, 0x2E));
+        SetBrush("VBadgeBorder", WithAlpha(accent, 0x77));
+        SetBrush("VEmpty", palette.Empty);
+
+        var opacity = ClampOpacity(_model.Style?.Opacity ?? 0.9);
+        RootBorder.Opacity = opacity;
+        RootBorder.Background = new LinearGradientBrush(palette.PanelTop, palette.PanelBottom, 90);
+        RootBorder.BorderBrush = new LinearGradientBrush
         {
-            var accent = (Color)ColorConverter.ConvertFromString(string.IsNullOrWhiteSpace(a.Accent) ? "#7C9CFF" : a.Accent);
-            Resources["VAccent"] = new SolidColorBrush(accent);
-            if (FindName("KindBadge") is TextBlock == false) { }
-        }
-        catch { }
-        // размер плиток / плотность
+            StartPoint = new Point(0, 0),
+            EndPoint = new Point(1, 1),
+            GradientStops = new GradientStopCollection
+            {
+                new(palette.BorderTop, 0),
+                new(palette.BorderMid, 0.55),
+                new(accent, 1)
+            }
+        };
+
         var tile = a.TileSize <= 0 ? 92 : a.TileSize;
         if (string.Equals(a.Density, "compact", StringComparison.OrdinalIgnoreCase)) tile = (int)(tile * 0.82);
         if (string.Equals(a.Density, "comfortable", StringComparison.OrdinalIgnoreCase)) tile = (int)(tile * 1.15);
         Resources["TileWidth"] = (double)Math.Max(72, Math.Min(160, tile));
         Resources["FontScale"] = a.FontScale <= 0 ? 1.0 : a.FontScale;
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero) ApplyBackdrop(hwnd);
+
         if (animate && a.Animations && IsLoaded)
         {
-            var fade = new DoubleAnimation(0.0, RootBorder.Opacity, TimeSpan.FromMilliseconds(220)) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
-            RootBorder.BeginAnimation(OpacityProperty, fade);
+            RootScale.ScaleX = RootScale.ScaleY = 0.965;
+            RootBorder.Opacity = 0;
+            var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+            RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(190)) { EasingFunction = ease });
+            RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(190)) { EasingFunction = ease });
+            RootBorder.BeginAnimation(OpacityProperty, new DoubleAnimation(opacity, TimeSpan.FromMilliseconds(220)) { EasingFunction = ease });
         }
     }
 
+    private void SetBrush(string key, Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        Resources[key] = brush;
+    }
+
+    private static Color ParseColor(string? text, Color fallback)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(text) && ColorConverter.ConvertFromString(text) is Color c) return c;
+        }
+        catch { }
+        return fallback;
+    }
+
+    private static Color WithAlpha(Color color, byte alpha) => Color.FromArgb(alpha, color.R, color.G, color.B);
+
+    private ThemePalette ResolvePalette(AppearanceSettings a)
+    {
+        var accent = ParseColor(a.Accent, Color.FromRgb(0x7C, 0x9C, 0xFF));
+        return (a.Theme ?? "dark").Trim().ToLowerInvariant() switch
+        {
+            "light" => new ThemePalette(
+                PanelTop: Color.FromArgb(0xEE, 0xF7, 0xF9, 0xFD), PanelBottom: Color.FromArgb(0xF2, 0xE9, 0xEE, 0xF7),
+                Text: Color.FromRgb(0x1B, 0x22, 0x32), TextDim: Color.FromRgb(0x5B, 0x68, 0x80),
+                Header: Color.FromArgb(0x26, 0x00, 0x00, 0x00), ItemBg: Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF),
+                ItemBorder: Color.FromArgb(0x22, 0x00, 0x00, 0x00), ItemHover: Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF),
+                Empty: Color.FromArgb(0x99, 0x5B, 0x68, 0x80),
+                BorderTop: Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF), BorderMid: Color.FromArgb(0x44, 0x00, 0x00, 0x00)),
+            "glass" => new ThemePalette(
+                PanelTop: Color.FromArgb(0x5A, 0x18, 0x22, 0x34), PanelBottom: Color.FromArgb(0x46, 0x10, 0x16, 0x1F),
+                Text: Color.FromRgb(0xEA, 0xF2, 0xFF), TextDim: Color.FromRgb(0x9F, 0xB2, 0xD0),
+                Header: Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF), ItemBg: Color.FromArgb(0x16, 0xFF, 0xFF, 0xFF),
+                ItemBorder: Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF), ItemHover: Color.FromArgb(0x2A, 0xFF, 0xFF, 0xFF),
+                Empty: Color.FromArgb(0x80, 0xA8, 0xB8, 0xD8),
+                BorderTop: Color.FromArgb(0x88, 0xFF, 0xFF, 0xFF), BorderMid: Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF)),
+            _ => new ThemePalette(
+                PanelTop: Color.FromArgb(0xCC, 0x14, 0x19, 0x22), PanelBottom: Color.FromArgb(0xD6, 0x10, 0x14, 0x1C),
+                Text: Color.FromRgb(0xF4, 0xF7, 0xFF), TextDim: Color.FromRgb(0xA8, 0xB8, 0xD8),
+                Header: Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF), ItemBg: Color.FromArgb(0x12, 0xFF, 0xFF, 0xFF),
+                ItemBorder: Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF), ItemHover: Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF),
+                Empty: Color.FromArgb(0x70, 0xA8, 0xB8, 0xD8),
+                BorderTop: Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF), BorderMid: Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF))
+        };
+    }
+
+    private sealed record ThemePalette(
+        Color PanelTop, Color PanelBottom, Color Text, Color TextDim, Color Header,
+        Color ItemBg, Color ItemBorder, Color ItemHover, Color Empty, Color BorderTop, Color BorderMid);
+
     public void RefreshItems()
     {
-        Items.Clear();
-        if (_model.Kind == VitrineKind.Portal)
-            foreach (var it in EnumeratePortalItems()) Items.Add(VitrineItemView.From(it, _model.Id, true, _actions.Data.Watch.Appearance));
-        else
-            foreach (var it in _model.Items) Items.Add(VitrineItemView.From(it, _model.Id, false, _actions.Data.Watch.Appearance));
-        EmptyHint.Visibility = Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        KindBadge.Text = _model.Kind == VitrineKind.Portal ? $"портал · {Items.Count}" : $"витрина · {Items.Count}";
+        if (_refreshing) return;
+        _refreshing = true;
+        try
+        {
+            Items.Clear();
+            var appearance = CurrentAppearance;
+            if (_model.Kind == VitrineKind.Portal)
+                foreach (var it in EnumeratePortalItems()) Items.Add(VitrineItemView.From(it, _model.Id, true, appearance));
+            else
+                foreach (var it in _model.Items) Items.Add(VitrineItemView.From(it, _model.Id, false, appearance));
+            EmptyHint.Visibility = Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            KindBadge.Text = _model.Kind == VitrineKind.Portal ? $"портал · {Items.Count}" : $"витрина · {Items.Count}";
+        }
+        finally { _refreshing = false; }
     }
 
     private IEnumerable<VitrineItem> EnumeratePortalItems()
@@ -223,29 +290,34 @@ public partial class VitrineWindow : Window
             return Enumerable.Empty<VitrineItem>();
         try
         {
-            return Directory.EnumerateFileSystemEntries(_model.FolderPath).Select(p => new VitrineItem
-            { Path = p, DisplayName = Path.GetFileName(p), Kind = DetectKind(p) });
+            return Directory.EnumerateFileSystemEntries(_model.FolderPath)
+                .OrderBy(p => Directory.Exists(p) ? 0 : 1)
+                .ThenBy(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase)
+                .Select(p => new VitrineItem
+                {
+                    Path = p,
+                    DisplayName = Path.GetFileName(p),
+                    Kind = FileFacts.DetectKind(p)
+                })
+                .ToList();
         }
         catch { return Enumerable.Empty<VitrineItem>(); }
-    }
-
-    private static ItemKind DetectKind(string path)
-    {
-        if (Directory.Exists(path)) return ItemKind.Folder;
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext == ".lnk" || ext == ".url") return ItemKind.Shortcut;
-        if (ext is ".exe" or ".msi" or ".bat" or ".cmd" or ".appref-ms") return ItemKind.Application;
-        return ItemKind.File;
     }
 
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ClickCount == 2)
         {
-            if (_model.Kind == VitrineKind.Portal && !string.IsNullOrWhiteSpace(_model.FolderPath) && Directory.Exists(_model.FolderPath)) TryOpen(_model.FolderPath);
+            if (_model.Kind == VitrineKind.Portal && !string.IsNullOrWhiteSpace(_model.FolderPath) && Directory.Exists(_model.FolderPath))
+                TryOpen(_model.FolderPath);
             return;
         }
-        if (e.ButtonState == MouseButtonState.Pressed) { try { DragMove(); } catch { } }
+        if (e.ButtonState == MouseButtonState.Pressed)
+        {
+            try { DragMove(); } catch { }
+            // после перетаскивания снова удерживаем окно на слое рабочего стола
+            SendToBack();
+        }
     }
 
     private void Item_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -266,7 +338,9 @@ public partial class VitrineWindow : Window
         _dragStart = default;
         var data = new DataObject();
         data.SetData(InternalDragFormat, new InternalDragData { SourceVitrineId = _model.Id, ItemPath = v.Path });
-        DragDrop.DoDragDrop(fe, data, DragDropEffects.Move);
+        _dragging = true;
+        try { DragDrop.DoDragDrop(fe, data, DragDropEffects.Move); }
+        finally { _dragging = false; SendToBack(); }
     }
 
     private static void TryOpen(string path)
@@ -283,7 +357,7 @@ public partial class VitrineWindow : Window
     }
 
     private void Window_LocationChanged(object? sender, EventArgs e) => ScheduleSaveBounds();
-    private void Window_SizeChanged(object sender, SizeChangedEventArgs e) => ScheduleSaveBounds();
+    private void Window_SizeChanged(object? sender, SizeChangedEventArgs e) => ScheduleSaveBounds();
     private void ScheduleSaveBounds()
     {
         if (_suppressSave) return;
@@ -300,36 +374,42 @@ public partial class VitrineWindow : Window
 
     private async void Window_Drop(object sender, DragEventArgs e)
     {
-        if (e.Data.GetData(InternalDragFormat) is InternalDragData drag) { await HandleInternalDropAsync(drag); e.Handled = true; return; }
-        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
-        if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths) return;
-        foreach (var p in paths)
+        _dragging = true;
+        try
         {
-            if (string.IsNullOrWhiteSpace(p)) continue;
-            if (_model.Kind == VitrineKind.Portal)
+            if (e.Data.GetData(InternalDragFormat) is InternalDragData drag) { await HandleInternalDropAsync(drag); e.Handled = true; return; }
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths) return;
+            foreach (var p in paths)
             {
-                if (!string.IsNullOrWhiteSpace(_model.FolderPath) && (File.Exists(p) || Directory.Exists(p)))
-                    await _actions.MoveFileToFolderAsync(p, _model.FolderPath);
-            }
-            else
-            {
-                var pathToAdd = p;
-                if (File.Exists(p) || Directory.Exists(p))
+                if (string.IsNullOrWhiteSpace(p)) continue;
+                if (_model.Kind == VitrineKind.Portal)
                 {
-                    var storage = VitrineStorage.GetManagedFolder(_model);
-                    if (!VitrineStorage.IsInDirectory(p, storage))
-                    {
-                        var moved = await _actions.MoveFileToFolderAsync(p, storage);
-                        if (moved != null) pathToAdd = moved;
-                    }
+                    if (!string.IsNullOrWhiteSpace(_model.FolderPath) && (File.Exists(p) || Directory.Exists(p)))
+                        await _actions.MoveFileToFolderAsync(p, _model.FolderPath);
                 }
-                if (_model.Items.Any(i => string.Equals(i.Path, pathToAdd, StringComparison.OrdinalIgnoreCase))) continue;
-                _model.Items.Add(new VitrineItem { Path = pathToAdd, DisplayName = Path.GetFileName(pathToAdd), Kind = DetectKind(pathToAdd), IsPinned = true });
+                else
+                {
+                    var pathToAdd = p;
+                    var useReference = _actions.Data.Watch.CollectionPlacement == CollectionPlacement.Reference;
+                    if (!useReference && (File.Exists(p) || Directory.Exists(p)))
+                    {
+                        var storage = VitrineStorage.GetManagedFolder(_model);
+                        if (!VitrineStorage.IsInDirectory(p, storage))
+                        {
+                            var moved = await _actions.MoveFileToFolderAsync(p, storage);
+                            if (moved != null) pathToAdd = moved;
+                        }
+                    }
+                    if (_model.Items.Any(i => string.Equals(i.Path, pathToAdd, StringComparison.OrdinalIgnoreCase))) continue;
+                    _model.Items.Add(new VitrineItem { Path = pathToAdd, DisplayName = Path.GetFileName(pathToAdd), Kind = FileFacts.DetectKind(pathToAdd), IsPinned = true });
+                }
             }
+            RefreshItems();
+            await _actions.SaveLayoutAsync();
+            e.Handled = true;
         }
-        RefreshItems();
-        await _actions.SaveLayoutAsync();
-        e.Handled = true;
+        finally { _dragging = false; SendToBack(); }
     }
 
     private async Task HandleInternalDropAsync(InternalDragData drag)
@@ -354,8 +434,9 @@ public partial class VitrineWindow : Window
 
         source.Items.Remove(item);
         item.IsPinned = true;
+        var useReference = _actions.Data.Watch.CollectionPlacement == CollectionPlacement.Reference;
         var storage = VitrineStorage.GetManagedFolder(_model);
-        if ((File.Exists(item.Path) || Directory.Exists(item.Path)) && !VitrineStorage.IsInDirectory(item.Path, storage))
+        if (!useReference && (File.Exists(item.Path) || Directory.Exists(item.Path)) && !VitrineStorage.IsInDirectory(item.Path, storage))
         {
             var moved = await _actions.MoveFileToFolderAsync(item.Path, storage);
             if (moved != null) { item.Path = moved; item.DisplayName = Path.GetFileName(moved); }
@@ -386,6 +467,7 @@ public partial class VitrineWindow : Window
             _model.Name = Path.GetFileName(dlg.FolderName.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         _model.Items.Clear();
         ApplyModel();
+        _portalTimer.Start();
         await _actions.SaveLayoutAsync();
         _actions.LogManual($"Витрина настроена как портал: {_model.Name}");
     }
@@ -394,10 +476,13 @@ public partial class VitrineWindow : Window
     {
         _model.Kind = VitrineKind.Collection;
         _model.FolderPath = null;
+        _portalTimer.Stop();
         ApplyModel();
         await _actions.SaveLayoutAsync();
         _actions.LogManual($"Витрина переведена в режим коллекции: {_model.Name}");
     }
+
+    private void RefreshContents_Click(object sender, RoutedEventArgs e) => RefreshItems();
 
     private void OpenPortalFolder_Click(object sender, RoutedEventArgs e)
     {
@@ -441,6 +526,38 @@ public partial class VitrineWindow : Window
     { var v = MenuItemView(sender); if (v == null || v.IsPortalItem) return; var it = _model.Items.FirstOrDefault(i => string.Equals(i.Path, v.Path, StringComparison.OrdinalIgnoreCase)); if (it == null) return; it.IsPinned = !it.IsPinned; RefreshItems(); await _actions.SaveLayoutAsync(); }
     private async void ItemRemove_Click(object sender, RoutedEventArgs e)
     { var v = MenuItemView(sender); if (v == null || v.IsPortalItem) return; _model.Items.RemoveAll(i => string.Equals(i.Path, v.Path, StringComparison.OrdinalIgnoreCase)); RefreshItems(); await _actions.SaveLayoutAsync(); }
+
+    private void Tile_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement tile) return;
+        if (!CurrentAppearance.Animations) return;
+        try
+        {
+            var index = tile.DataContext is VitrineItemView view ? Items.IndexOf(view) : 0;
+            var begin = TimeSpan.FromMilliseconds(Math.Min(240, Math.Max(0, index) * 14));
+            tile.RenderTransform = new TranslateTransform(0, 9);
+            var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+            tile.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(190)) { BeginTime = begin, EasingFunction = ease });
+            ((TranslateTransform)tile.RenderTransform).BeginAnimation(TranslateTransform.YProperty,
+                new DoubleAnimation(9, 0, TimeSpan.FromMilliseconds(210)) { BeginTime = begin, EasingFunction = ease });
+        }
+        catch { }
+    }
+
+    /// <summary>Короткая акцентная вспышка — визуальный отклик на авто-размещение/перемещение.</summary>
+    public void Pulse()
+    {
+        if (!CurrentAppearance.Animations || !IsLoaded) return;
+        try
+        {
+            var animation = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(620) };
+            animation.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+            animation.KeyFrames.Add(new EasingDoubleKeyFrame(0.9, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(110))));
+            animation.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(620))));
+            PulseBorder.BeginAnimation(OpacityProperty, animation);
+        }
+        catch { }
+    }
 
     private static string? Prompt(string text, string def)
     {

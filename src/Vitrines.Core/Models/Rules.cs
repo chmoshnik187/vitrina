@@ -46,8 +46,11 @@ public sealed class RuleAction
 {
     public RuleActionType Type { get; set; } = RuleActionType.PlaceInVitrine;
     public Guid? TargetVitrineId { get; set; }
+    /// <summary>Имя витрины: для CreateVitrineAndPlace — создать/найти, для PlaceInVitrine — найти по имени (если не задан Id).</summary>
     public string? CreateVitrineName { get; set; }
     public string? TargetFolderPath { get; set; }
+    /// <summary>Необязательный шаблон нового имени файла: {name}, {ext}, {yyyy}, {MM}, {dd}, {HH}, {mm}, {ss}, {counter}.</summary>
+    public string? RenameTemplate { get; set; }
 }
 
 public enum RuleActionType

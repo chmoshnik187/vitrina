@@ -42,6 +42,8 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
         if (File.Exists(_inboxPath))
             data.Inbox = await ReadAsync<List<InboxEntry>>(_inboxPath, ct) ?? new();
         // нормализация на случай новых полей/старых данных
+        data.Vitrines ??= new();
+        data.Rules ??= new();
         data.Watch ??= new WatchSettings();
         data.Watch.Appearance ??= new AppearanceSettings();
         data.Watch.Sources ??= new();
@@ -49,8 +51,15 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
         data.Watch.ExcludeFolders ??= new();
         data.Watch.ExcludeExtensions ??= new();
         data.Watch.ExcludeNameContains ??= new();
+        data.Watch.LockedFileRetries = Math.Clamp(data.Watch.LockedFileRetries, 0, 10);
+        data.Watch.ScheduleMinutes = Math.Clamp(data.Watch.ScheduleMinutes, 5, 1440);
+        data.Watch.StableSeconds = Math.Clamp(data.Watch.StableSeconds, 1, 120);
         data.Inbox ??= new();
-        foreach (var r in data.Rules) r.Condition ??= new RuleCondition();
+        foreach (var r in data.Rules)
+        {
+            r.Condition ??= new RuleCondition();
+            r.Action ??= new RuleAction();
+        }
         return data;
     }
 
